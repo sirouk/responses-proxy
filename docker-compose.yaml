@@ -1,0 +1,52 @@
+services:
+  openai-responses-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openai-responses-proxy
+    environment:
+      # Host port for the proxy (maps to container port 8282)
+      HOST_PORT: ${HOST_PORT:-8282}
+      # Backend URL - Chutes.ai backend
+      BACKEND_URL: ${BACKEND_URL:-https://llm.chutes.ai/v1/chat/completions}
+      # Log level
+      RUST_LOG: ${RUST_LOG:-debug}
+      # Log directory (must match volume mount)
+      LOG_DIR: /app/logs
+    ports:
+      - "${HOST_PORT:-8282}:${HOST_PORT:-8282}"
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:${HOST_PORT:-8282}/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  caddy:
+    image: caddy:latest
+    container_name: responses-proxy-caddy
+    environment:
+      - HOST_PORT=${HOST_PORT:-8282}
+      - CADDY_DOMAIN=${CADDY_DOMAIN:-responses-proxy.chutes.ai}
+      - CADDY_PORT=${CADDY_PORT:-443}
+      - CADDY_TLS=${CADDY_TLS:-true}
+    ports:
+      - "${CADDY_PORT:-443}:${CADDY_PORT:-443}"
+      - "80:80"  # For ACME challenges
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy-entrypoint.sh:/caddy-entrypoint.sh:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    entrypoint: [ "/caddy-entrypoint.sh" ]
+    depends_on:
+      - openai-responses-proxy
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+
