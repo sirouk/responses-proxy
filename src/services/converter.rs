@@ -18,10 +18,11 @@ pub fn convert_to_chat_completions(req: &ResponseRequest) -> Result<ChatCompleti
 When calling functions/tools, you MUST use the standard OpenAI Chat Completions JSON format, NOT any XML or custom syntax. \
 The system will automatically handle tool execution. Never output tool calls as text - use the native function calling mechanism.\n\n\
 File Operation Best Practices:\n\
-- Use relative paths (e.g. 'test.py', 'src/main.rs') when working in the current workspace\n\
-- Always read files before editing to understand current content\n\
-- For apply_patch, include 3-5 lines of context before and after changes for reliable matching\n\
-- If a read attempt succeeds and you see file content, proceed with editing immediately";
+- Use relative paths (e.g. 'test.py', 'src/main.rs') for files in the workspace\n\
+- Read each file ONCE before editing - do not re-read files you've already successfully read\n\
+- After receiving file contents from read_file, proceed directly to editing without redundant reads\n\
+- For apply_patch, include 3-5 lines of surrounding context for reliable matching\n\
+- Never announce \"I will read the file\" after you've already read it - just use the content you received";
             let enhanced_instructions = format!("{}{}", instructions, tool_override);
 
             messages.push(ChatMessage {
