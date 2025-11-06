@@ -266,6 +266,24 @@ collect_api_key() {
     log_info "You can retrieve your API key from: $API_KEY_URL"
     local key
     local confirmation
+    local restored_stdin=""
+
+    if [ ! -t 0 ]; then
+        local tty_path
+        tty_path=$(tty 2>/dev/null || true)
+        if [ -n "$tty_path" ]; then
+            exec 3<&0
+            exec 0<"$tty_path"
+            restored_stdin=1
+        elif [ -r /dev/tty ]; then
+            exec 3<&0
+            exec 0</dev/tty
+            restored_stdin=1
+        else
+            log_error "Interactive terminal (TTY) required to enter API key."
+        fi
+    fi
+
     while true; do
         read -s -p "Enter your chutes.ai API key: " key
         echo
@@ -281,6 +299,12 @@ collect_api_key() {
         fi
         break
     done
+
+    if [ -n "$restored_stdin" ]; then
+        exec 0<&3
+        exec 3<&-
+    fi
+
     echo "$key"
 }
 
