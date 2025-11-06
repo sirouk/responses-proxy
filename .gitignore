@@ -1,0 +1,10 @@
+target/
+.env
+*.log
+Cargo.lock
+.DS_Store
+
+
+# Request/response logs
+logs/*.json
+logs/*.txt

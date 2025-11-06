@@ -1,0 +1,139 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+// ---------- Chat Completions Request (to Chutes.ai) ----------
+
+#[derive(Serialize, Debug)]
+pub struct ChatMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>, // String or Array for multimodal
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>, // For tool role messages
+}
+
+#[derive(Serialize, Debug)]
+pub struct ChatFunction {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub parameters: Value,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(untagged)]
+pub enum ChatTool {
+    Function {
+        #[serde(rename = "type")]
+        type_: String,
+        function: ChatFunction,
+    },
+}
+
+#[derive(Serialize, Debug)]
+pub struct ChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ChatTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    pub stream: bool,
+}
+
+// ---------- Chat Completions Response (from Chutes.ai) ----------
+
+#[derive(Deserialize, Debug, Default)]
+pub struct ChatCompletionChunk {
+    #[serde(default)]
+    #[serde(rename = "id")]
+    pub _id: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "object")]
+    pub _object: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "created")]
+    pub _created: Option<i64>,
+    #[serde(default)]
+    #[serde(rename = "model")]
+    pub _model: Option<String>,
+    #[serde(default)]
+    pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub error: Option<Value>,
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct Choice {
+    #[serde(default)]
+    #[serde(rename = "index")]
+    pub _index: usize,
+    #[serde(default)]
+    pub delta: Option<Delta>,
+    #[serde(default)]
+    pub message: Option<Value>,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct Delta {
+    #[serde(default)]
+    #[serde(rename = "role")]
+    pub _role: Option<String>,
+    #[serde(default)]
+    pub content: Option<Value>,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+    // Extended reasoning content (for reasoning models like DeepSeek-R1)
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ToolCallDelta {
+    pub index: usize,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default, rename = "type")]
+    pub type_: Option<String>,
+    #[serde(default)]
+    pub function: Option<FunctionCallDelta>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct FunctionCallDelta {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct ChatUsage {
+    #[serde(default)]
+    pub prompt_tokens: Option<u32>,
+    #[serde(default)]
+    pub completion_tokens: Option<u32>,
+    #[serde(default)]
+    #[serde(rename = "total_tokens")]
+    pub _total_tokens: Option<u32>,
+    #[serde(default)]
+    #[serde(rename = "prompt_tokens_details")]
+    pub _prompt_tokens_details: Option<Value>,
+    #[serde(default)]
+    #[serde(rename = "completion_tokens_details")]
+    pub _completion_tokens_details: Option<Value>,
+}

@@ -1,0 +1,14 @@
+target/
+.env
+.env.*
+!.env.sample
+*.log
+.git/
+.gitignore
+docs/
+tests/
+examples/
+*.sh
+!caddy-entrypoint.sh
+claude-proxy/
+

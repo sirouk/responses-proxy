@@ -1,0 +1,73 @@
+/// Maximum buffer size before clearing (1MB)
+const MAX_BUFFER_SIZE: usize = 1_048_576;
+
+/// Simple SSE event parser that accumulates lines until a blank line, then yields the combined `data:` payload.
+/// This follows the SSE spec: multiple `data:` lines per event are joined by `\n`.
+pub struct SseEventParser {
+    buf: String,
+    // Accumulates data: lines for the current event until blank line.
+    cur_data_lines: Vec<String>,
+}
+
+impl SseEventParser {
+    pub fn new() -> Self {
+        Self {
+            buf: String::with_capacity(16 * 1024),
+            cur_data_lines: Vec::with_capacity(4),
+        }
+    }
+
+    /// Feed bytes and extract zero or more complete SSE event payloads (already joined).
+    pub fn push_and_drain_events(&mut self, chunk: &[u8]) -> Vec<String> {
+        let s = String::from_utf8_lossy(chunk);
+
+        // Check buffer size limit to prevent unbounded growth
+        if self.buf.len() + s.len() > MAX_BUFFER_SIZE {
+            log::warn!(
+                "⚠️  SSE buffer exceeded {}MB limit (current: {} bytes, incoming: {} bytes). Clearing buffer to prevent memory exhaustion.",
+                MAX_BUFFER_SIZE / 1_048_576,
+                self.buf.len(),
+                s.len()
+            );
+            // Clear buffer and start fresh with new chunk
+            self.buf.clear();
+            self.cur_data_lines.clear();
+        }
+
+        self.buf.push_str(&s);
+        let mut out = Vec::new();
+
+        loop {
+            // Find next newline
+            let Some(pos) = self.buf.find('\n') else {
+                break;
+            };
+            // Take one line (retain possible preceding \r, we'll trim)
+            let mut line = self.buf.drain(..=pos).collect::<String>();
+            if line.ends_with('\n') {
+                line.pop();
+            }
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            let trimmed = line.as_str();
+
+            // Blank line => event terminator
+            if trimmed.is_empty() {
+                if !self.cur_data_lines.is_empty() {
+                    let payload = self.cur_data_lines.join("\n");
+                    self.cur_data_lines.clear();
+                    out.push(payload);
+                }
+                continue;
+            }
+
+            // Only collect `data:` lines, ignore others (e.g., `event:`/`id:`)
+            if let Some(rest) = trimmed.strip_prefix("data:") {
+                self.cur_data_lines.push(rest.trim_start().to_string());
+            }
+        }
+
+        out
+    }
+}
