@@ -13,8 +13,15 @@ pub fn convert_to_chat_completions(req: &ResponseRequest) -> Result<ChatCompleti
     // Add instructions as system message if provided
     if let Some(instructions) = &req.instructions {
         if !instructions.is_empty() {
-            // Append tool calling format override for Chat Completions compatibility
-            let tool_override = "\n\n---\n\nIMPORTANT: Tool Calling Format Override\nWhen calling functions/tools, you MUST use the standard OpenAI Chat Completions JSON format, NOT any XML or custom syntax. The system will automatically handle tool execution. Never output tool calls as text - use the native function calling mechanism.";
+            // Append tool calling and file operation guidance for Chat Completions compatibility
+            let tool_override = "\n\n---\n\nIMPORTANT: Tool Calling Format Override\n\
+When calling functions/tools, you MUST use the standard OpenAI Chat Completions JSON format, NOT any XML or custom syntax. \
+The system will automatically handle tool execution. Never output tool calls as text - use the native function calling mechanism.\n\n\
+File Operation Best Practices:\n\
+- Use relative paths (e.g. 'test.py', 'src/main.rs') when working in the current workspace\n\
+- Always read files before editing to understand current content\n\
+- For apply_patch, include 3-5 lines of context before and after changes for reliable matching\n\
+- If a read attempt succeeds and you see file content, proceed with editing immediately";
             let enhanced_instructions = format!("{}{}", instructions, tool_override);
 
             messages.push(ChatMessage {
