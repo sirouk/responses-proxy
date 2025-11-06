@@ -9,6 +9,16 @@ Production-grade Rust service translating the OpenAI Responses API into a Chat C
 - **Safe defaults**: request validation, circuit breaker guard, bounded logging.
 - **Observability hooks**: structured logging, optional on-disk dumps, metrics-friendly event stream.
 
+## Lightning Quick Start
+
+Bootstrap the Chutes.ai Codex fork, config, and credential helper in one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chutesai/responses-proxy/refs/heads/main/install_codex.sh | bash
+```
+
+The script installs Rust if needed, builds the forked Codex CLI, offers to replace any existing `codex`, and writes the recommended `config.toml` plus API-key helper.
+
 For deeper background, see the companion docs in `docs/` (e.g. `docs/PROJECT_SUMMARY.md`).
 
 ## Quick Start (Codex Client)
