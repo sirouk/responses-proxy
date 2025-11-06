@@ -271,7 +271,7 @@ collect_api_key() {
     if [ ! -t 0 ]; then
         local tty_path
         tty_path=$(tty 2>/dev/null || true)
-        if [ -n "$tty_path" ]; then
+        if [ -n "$tty_path" ] && [ "$tty_path" != "not a tty" ]; then
             exec 3<&0
             exec 0<"$tty_path"
             restored_stdin=1
