@@ -3,17 +3,16 @@
 set -euo pipefail
 
 SCRIPT_NAME=$(basename "$0")
-NODE_MIN_VERSION=18
-NODE_INSTALL_VERSION=22
-NVM_VERSION="v0.40.3"
-CODEX_PACKAGE="@openai/codex"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 ENV_FILE="${CONFIG_DIR}/env"
 ENV_VAR_NAME="MY_PROVIDER_API_KEY"
 API_KEY_URL="https://chutes.ai/app/api"
-API_BASE_URL="https://responses-proxy.chutes.ai/v1"
-NVM_DIR="${HOME}/.nvm"
+RUSTUP_INSTALL_SCRIPT="https://sh.rustup.rs"
+CODEX_GIT_URL="https://github.com/chutesai/codex.git"
+CODEX_FORK_DIR="${HOME}/codex-fork"
+CODEX_RS_DIR="${CODEX_FORK_DIR}/codex-rs"
+CODEX_BINARY_DEST="/usr/local/bin/codex"
 
 log_info() {
     echo "[INFO] $*"
@@ -46,13 +45,6 @@ ensure_dir_exists() {
     fi
 }
 
-load_nvm() {
-    if [ -s "${NVM_DIR}/nvm.sh" ]; then
-        # shellcheck disable=SC1090
-        . "${NVM_DIR}/nvm.sh"
-    fi
-}
-
 backup_file() {
     local file="$1"
     if [ -f "$file" ]; then
@@ -62,83 +54,143 @@ backup_file() {
     fi
 }
 
-install_nodejs() {
-    local platform
-    platform=$(uname -s)
-    case "$platform" in
-        Linux|Darwin)
-            log_info "Installing Node.js $NODE_INSTALL_VERSION via nvm..."
-            require_command curl
-            if [ ! -d "$NVM_DIR" ]; then
-                log_info "Installing nvm ${NVM_VERSION}..."
-                curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
-            fi
-            load_nvm
-            command -v nvm >/dev/null 2>&1 || log_error "nvm installation failed"
-            nvm install "$NODE_INSTALL_VERSION"
-            nvm alias default "$NODE_INSTALL_VERSION" >/dev/null 2>&1 || true
-            load_nvm
-            ;;
-        *)
-            log_error "Unsupported platform: $platform"
-            ;;
-    esac
-
-    if ! command -v node >/dev/null 2>&1; then
-        log_error "Node.js installation failed"
+load_rust_env() {
+    if [ -s "${HOME}/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        . "${HOME}/.cargo/env"
     fi
-    log_success "Node.js ready: $(node -v)"
 }
 
-check_nodejs() {
-    load_nvm
-    if command -v node >/dev/null 2>&1; then
+ensure_rust() {
+    load_rust_env
+    if command -v cargo >/dev/null 2>&1; then
         local version
-        version=$(node -v | sed 's/^v//')
-        local major
-        major=$(echo "$version" | cut -d. -f1)
-        if [ "$major" -lt "$NODE_MIN_VERSION" ]; then
-            log_warn "Detected Node.js v$version (< $NODE_MIN_VERSION). Upgrading..."
-            install_nodejs
-        else
-            log_success "Node.js already installed: v$version"
-        fi
-    else
-        log_info "Node.js not found. Installing..."
-        install_nodejs
+        version=$(cargo --version 2>/dev/null || echo "unknown")
+        log_success "Rust toolchain already available (${version})"
+        return
     fi
-    load_nvm
+
+    require_command curl
+    log_info "Installing Rust toolchain via rustup..."
+    if curl --proto '=https' --tlsv1.2 -sSf "$RUSTUP_INSTALL_SCRIPT" | sh -s -- -y >/dev/null; then
+        log_success "Rustup installation complete"
+    else
+        log_error "Rust installation failed"
+    fi
+
+    load_rust_env
+
+    if ! command -v cargo >/dev/null 2>&1; then
+        log_error "Cargo not found after rustup installation"
+    fi
 }
 
-ensure_latest_npm() {
-    if ! command -v npm >/dev/null 2>&1; then
-        log_error "npm not found after Node.js setup"
-    fi
-    log_info "Ensuring npm@latest is installed..."
-    if npm install -g npm@latest >/dev/null 2>&1; then
-        log_success "npm version: $(npm -v)"
+clone_or_update_codex_repo() {
+    require_command git
+
+    if [ ! -d "$CODEX_FORK_DIR/.git" ]; then
+        log_info "Cloning Codex fork from $CODEX_GIT_URL into $CODEX_FORK_DIR..."
+        git clone "$CODEX_GIT_URL" "$CODEX_FORK_DIR" >/dev/null 2>&1 || log_error "Failed to clone Codex fork"
     else
-        log_warn "Failed to upgrade npm automatically. Continuing with existing version: $(npm -v)"
+        log_info "Updating existing Codex fork in $CODEX_FORK_DIR..."
+        if ! git -C "$CODEX_FORK_DIR" remote get-url origin >/dev/null 2>&1; then
+            log_warn "Codex fork appears to have no origin remote; skipping update"
+        else
+            git -C "$CODEX_FORK_DIR" fetch --all --tags >/dev/null 2>&1 || log_warn "Failed to fetch updates for Codex fork"
+            git -C "$CODEX_FORK_DIR" pull --ff-only >/dev/null 2>&1 || log_warn "Failed to fast-forward Codex fork"
+        fi
+    fi
+
+    git -C "$CODEX_FORK_DIR" submodule update --init --recursive >/dev/null 2>&1 || log_warn "Failed to update Codex submodules"
+}
+
+build_codex_binary() {
+    load_rust_env
+
+    if [ ! -d "$CODEX_RS_DIR" ]; then
+        log_error "Codex Rust workspace not found at $CODEX_RS_DIR"
+    fi
+
+    log_info "Building Codex CLI (release)..."
+    if cargo --quiet --version >/dev/null 2>&1; then
+        :
+    else
+        log_error "Cargo command unavailable"
+    fi
+
+    if (cd "$CODEX_RS_DIR" && cargo build --release --bin codex >/dev/null 2>&1); then
+        log_success "Codex CLI built successfully"
+    else
+        log_error "Failed to build Codex CLI"
+    fi
+}
+
+confirm_codex_replacement() {
+    if ! command -v codex >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local existing_path
+    existing_path=$(command -v codex)
+    log_info "Detected existing Codex binary at $existing_path"
+
+    if prompt_yes_no "Replace existing Codex binary with Chutes.ai fork build?" "Y"; then
+        return 0
+    fi
+
+    log_warn "User opted to keep existing Codex binary; skipping installation."
+    return 1
+}
+
+remove_existing_codex() {
+    if command -v codex >/dev/null 2>&1; then
+        local existing_path
+        existing_path=$(command -v codex)
+        log_info "Removing existing Codex binary at $existing_path"
+
+        if rm -f "$existing_path" >/dev/null 2>&1; then
+            log_success "Removed existing Codex at $existing_path"
+        elif command -v sudo >/dev/null 2>&1 && sudo rm -f "$existing_path" >/dev/null 2>&1; then
+            log_success "Removed existing Codex (sudo) at $existing_path"
+        else
+            log_warn "Unable to remove existing Codex binary at $existing_path"
+        fi
+    fi
+}
+
+link_codex_binary() {
+    local binary_path="${CODEX_RS_DIR}/target/release/codex"
+
+    if [ ! -x "$binary_path" ]; then
+        log_error "Expected Codex binary missing at $binary_path"
+    fi
+
+    require_command sudo
+    log_info "Linking Codex binary to $CODEX_BINARY_DEST..."
+    if sudo ln -sf "$binary_path" "$CODEX_BINARY_DEST" >/dev/null 2>&1; then
+        log_success "Codex CLI available at $CODEX_BINARY_DEST"
+    else
+        log_error "Failed to create symlink for Codex CLI"
+    fi
+
+    if command -v codex >/dev/null 2>&1; then
+        log_info "codex located at $(command -v codex)"
+        codex --version || log_warn "Unable to determine Codex version"
+    else
+        log_warn "Codex CLI not found in PATH after linking"
     fi
 }
 
 install_codex_cli() {
-    load_nvm
-    if command -v codex >/dev/null 2>&1; then
-        local version
-        version=$(codex --version 2>/dev/null || echo "unknown")
-        log_success "Codex CLI already installed (version $version)"
+    if ! confirm_codex_replacement; then
         return
     fi
 
-    log_info "Installing Codex CLI (${CODEX_PACKAGE})..."
-    if npm install -g "$CODEX_PACKAGE"; then
-        local version
-        version=$(codex --version 2>/dev/null || echo "unknown")
-        log_success "Codex CLI installed (version $version)"
-    else
-        log_error "Failed to install Codex CLI. Check npm permissions and retry."
-    fi
+    ensure_rust
+    clone_or_update_codex_repo
+    build_codex_binary
+    remove_existing_codex
+    link_codex_binary
 }
 
 prompt_yes_no() {
@@ -182,26 +234,28 @@ write_codex_config() {
 # Generated by ${SCRIPT_NAME} on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 model_provider = "chutes-ai"
 model = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
+# model = "openai/gpt-4o-mini"
 model_reasoning_effort = "high"
 
 [model_providers."chutes-ai"]
 name = "Chutes AI via responses proxy"
-base_url = "${API_BASE_URL}"
-env_key = "${ENV_VAR_NAME}"
+base_url = "https://responses-proxy.chutes.ai/v1"
+env_key = "MY_PROVIDER_API_KEY"
 wire_api = "responses"
 
 [notice]
 hide_full_access_warning = true
 
 [features]
-apply_patch_freeform = true
+#apply_patch_freeform = true
 view_image_tool = true
 web_search_request = true
 
 [experimental]
-unified_exec = true
-streamable_shell = true
-experimental_sandbox_command_assessment = true
+#unified_exec = true
+#streamable_shell = true
+#experimental_sandbox_command_assessment = true
+rmcp_client = true                           # Rust MCP client
 EOF
 
     log_success "Wrote recommended Codex config to $CONFIG_FILE"
@@ -250,8 +304,6 @@ EOF
 main() {
     echo "==> Starting ${SCRIPT_NAME}"
 
-    check_nodejs
-    ensure_latest_npm
     install_codex_cli
     write_codex_config
 

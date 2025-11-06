@@ -32,14 +32,15 @@ For deeper background, see the companion docs in `docs/` (e.g. `docs/PROJECT_SUM
    hide_full_access_warning = true
 
    [features]
-   apply_patch_freeform = true
+   #apply_patch_freeform = true
    view_image_tool = true
    web_search_request = true
 
    [experimental]
-   unified_exec = true
-   streamable_shell = true
-   experimental_sandbox_command_assessment = true
+   #unified_exec = true
+   #streamable_shell = true
+   #experimental_sandbox_command_assessment = true
+   rmcp_client = true                           # Rust MCP client
    ```
 
 2. **Export your API key** (matches `env_key`):
