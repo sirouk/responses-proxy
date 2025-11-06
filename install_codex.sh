@@ -1,0 +1,272 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+NODE_MIN_VERSION=18
+NODE_INSTALL_VERSION=22
+NVM_VERSION="v0.40.3"
+CODEX_PACKAGE="@openai/codex"
+CONFIG_DIR="${HOME}/.codex"
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
+ENV_FILE="${CONFIG_DIR}/env"
+ENV_VAR_NAME="MY_PROVIDER_API_KEY"
+API_KEY_URL="https://chutes.ai/app/api"
+API_BASE_URL="https://responses-proxy.chutes.ai/v1"
+NVM_DIR="${HOME}/.nvm"
+
+log_info() {
+    echo "[INFO] $*"
+}
+
+log_success() {
+    echo "[OK] $*"
+}
+
+log_warn() {
+    echo "[WARN] $*"
+}
+
+log_error() {
+    echo "[ERROR] $*" >&2
+    exit 1
+}
+
+require_command() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log_error "Required command '$cmd' is not available in PATH."
+    fi
+}
+
+ensure_dir_exists() {
+    local dir="$1"
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" || log_error "Failed to create directory: $dir"
+    fi
+}
+
+load_nvm() {
+    if [ -s "${NVM_DIR}/nvm.sh" ]; then
+        # shellcheck disable=SC1090
+        . "${NVM_DIR}/nvm.sh"
+    fi
+}
+
+backup_file() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        local backup="${file}.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$file" "$backup" || log_error "Failed to back up $file"
+        log_info "Backed up existing file to $backup"
+    fi
+}
+
+install_nodejs() {
+    local platform
+    platform=$(uname -s)
+    case "$platform" in
+        Linux|Darwin)
+            log_info "Installing Node.js $NODE_INSTALL_VERSION via nvm..."
+            require_command curl
+            if [ ! -d "$NVM_DIR" ]; then
+                log_info "Installing nvm ${NVM_VERSION}..."
+                curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
+            fi
+            load_nvm
+            command -v nvm >/dev/null 2>&1 || log_error "nvm installation failed"
+            nvm install "$NODE_INSTALL_VERSION"
+            nvm alias default "$NODE_INSTALL_VERSION" >/dev/null 2>&1 || true
+            load_nvm
+            ;;
+        *)
+            log_error "Unsupported platform: $platform"
+            ;;
+    esac
+
+    if ! command -v node >/dev/null 2>&1; then
+        log_error "Node.js installation failed"
+    fi
+    log_success "Node.js ready: $(node -v)"
+}
+
+check_nodejs() {
+    load_nvm
+    if command -v node >/dev/null 2>&1; then
+        local version
+        version=$(node -v | sed 's/^v//')
+        local major
+        major=$(echo "$version" | cut -d. -f1)
+        if [ "$major" -lt "$NODE_MIN_VERSION" ]; then
+            log_warn "Detected Node.js v$version (< $NODE_MIN_VERSION). Upgrading..."
+            install_nodejs
+        else
+            log_success "Node.js already installed: v$version"
+        fi
+    else
+        log_info "Node.js not found. Installing..."
+        install_nodejs
+    fi
+    load_nvm
+}
+
+ensure_latest_npm() {
+    if ! command -v npm >/dev/null 2>&1; then
+        log_error "npm not found after Node.js setup"
+    fi
+    log_info "Ensuring npm@latest is installed..."
+    if npm install -g npm@latest >/dev/null 2>&1; then
+        log_success "npm version: $(npm -v)"
+    else
+        log_warn "Failed to upgrade npm automatically. Continuing with existing version: $(npm -v)"
+    fi
+}
+
+install_codex_cli() {
+    load_nvm
+    if command -v codex >/dev/null 2>&1; then
+        local version
+        version=$(codex --version 2>/dev/null || echo "unknown")
+        log_success "Codex CLI already installed (version $version)"
+        return
+    fi
+
+    log_info "Installing Codex CLI (${CODEX_PACKAGE})..."
+    if npm install -g "$CODEX_PACKAGE"; then
+        local version
+        version=$(codex --version 2>/dev/null || echo "unknown")
+        log_success "Codex CLI installed (version $version)"
+    else
+        log_error "Failed to install Codex CLI. Check npm permissions and retry."
+    fi
+}
+
+prompt_yes_no() {
+    local prompt="$1"
+    local default_choice="${2:-N}"
+    local hint
+    case "$default_choice" in
+        Y|y) hint="[Y/n]" ;;
+        *) hint="[y/N]" ;;
+    esac
+    local response
+    read -r -p "$prompt $hint " response
+    if [ -z "$response" ]; then
+        response="$default_choice"
+    fi
+    case "$response" in
+        Y|y|yes|YES|Yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+write_codex_config() {
+    ensure_dir_exists "$CONFIG_DIR"
+    chmod 700 "$CONFIG_DIR" >/dev/null 2>&1 || true
+
+    if [ -f "$CONFIG_FILE" ]; then
+        log_info "Existing Codex config detected at $CONFIG_FILE"
+        if ! prompt_yes_no "Overwrite with recommended settings?" "N"; then
+            log_warn "Skipping config update per user choice"
+            return
+        fi
+        backup_file "$CONFIG_FILE"
+    else
+        if ! prompt_yes_no "Write recommended Codex settings to $CONFIG_FILE?" "Y"; then
+            log_warn "Skipping config creation per user choice"
+            return
+        fi
+    fi
+
+    cat <<EOF >"$CONFIG_FILE"
+# Generated by ${SCRIPT_NAME} on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+model_provider = "chutes-ai"
+model = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
+model_reasoning_effort = "high"
+
+[model_providers."chutes-ai"]
+name = "Chutes AI via responses proxy"
+base_url = "${API_BASE_URL}"
+env_key = "${ENV_VAR_NAME}"
+wire_api = "responses"
+
+[notice]
+hide_full_access_warning = true
+
+[features]
+apply_patch_freeform = true
+view_image_tool = true
+web_search_request = true
+
+[experimental]
+unified_exec = true
+streamable_shell = true
+experimental_sandbox_command_assessment = true
+EOF
+
+    log_success "Wrote recommended Codex config to $CONFIG_FILE"
+}
+
+collect_api_key() {
+    echo
+    log_info "You can retrieve your API key from: $API_KEY_URL"
+    local key
+    local confirmation
+    while true; do
+        read -s -p "Enter your chutes.ai API key: " key
+        echo
+        if [ -z "$key" ]; then
+            log_warn "API key cannot be empty."
+            continue
+        fi
+        read -s -p "Re-enter to confirm: " confirmation
+        echo
+        if [ "$key" != "$confirmation" ]; then
+            log_warn "Entries did not match. Please try again."
+            continue
+        fi
+        break
+    done
+    echo "$key"
+}
+
+store_api_key() {
+    local key="$1"
+    if prompt_yes_no "Store API key in ${ENV_FILE} for easy sourcing?" "Y"; then
+        ensure_dir_exists "$CONFIG_DIR"
+        cat <<EOF >"$ENV_FILE"
+# Codex responses proxy credentials
+export ${ENV_VAR_NAME}="${key}"
+EOF
+        chmod 600 "$ENV_FILE" >/dev/null 2>&1 || true
+        log_success "Saved API key to $ENV_FILE (chmod 600)"
+        log_info "Add 'source $ENV_FILE' to your shell profile to load it automatically."
+    else
+        log_warn "Skipped storing API key on disk."
+        log_info "Export the key manually before using Codex: export ${ENV_VAR_NAME}=<your key>"
+    fi
+}
+
+main() {
+    echo "==> Starting ${SCRIPT_NAME}"
+
+    check_nodejs
+    ensure_latest_npm
+    install_codex_cli
+    write_codex_config
+
+    local api_key
+    api_key=$(collect_api_key)
+    store_api_key "$api_key"
+    unset api_key
+
+    echo
+    log_success "Codex environment prepared."
+    echo "Next steps:"
+    echo "  - If you stored your key, run: source $ENV_FILE"
+    echo "  - Otherwise, export ${ENV_VAR_NAME} manually as shown above."
+    echo "  - Launch Codex: codex"
+}
+
+main "$@"
+
