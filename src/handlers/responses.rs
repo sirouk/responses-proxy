@@ -549,6 +549,7 @@ pub async fn create_response(
         // Tool call tracking
         use std::collections::HashMap;
         let mut tool_calls: HashMap<usize, ToolCallState> = HashMap::new();
+        let mut next_xml_index: usize = 0; // Track next available index for XML tool calls
 
         // XML buffering - track if we're waiting for closing tag
         let mut xml_buffering = false;
@@ -738,9 +739,15 @@ pub async fn create_response(
                                             accumulated_text = cleaned;
 
                                             // Convert each XML call to function call events
-                                            for (idx, xml_call) in xml_calls.into_iter().enumerate()
+                                            for xml_call in xml_calls.into_iter()
                                             {
-                                                let call_idx = tool_calls.len() + idx;
+                                                // Find next available index to avoid collisions with native tool calls
+                                                while tool_calls.contains_key(&next_xml_index) {
+                                                    next_xml_index += 1;
+                                                }
+                                                let call_idx = next_xml_index;
+                                                next_xml_index += 1;
+                                                
                                                 let call_id =
                                                     format!("call_xml_{}_{}", request_id, call_idx);
                                                 let item_id = call_id.clone();

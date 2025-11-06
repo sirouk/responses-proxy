@@ -168,14 +168,8 @@ pub fn convert_to_chat_completions(req: &ResponseRequest) -> Result<ChatCompleti
     }
 
     // Convert tools if provided - ONLY function tools are supported
-    // But track what tools were in the original request so we don't inject duplicates
-    let original_tool_names: Vec<String> = if let Some(tools_vec) = req.tools.as_ref() {
-        tools_vec.iter().map(|t| t.function_def().name).collect()
-    } else {
-        Vec::new()
-    };
-
-    let mut tools = if let Some(tools_vec) = req.tools.as_ref() {
+    // Simply forward tools from the client; no injection needed
+    let tools = if let Some(tools_vec) = req.tools.as_ref() {
         // Filter to only function tools; others are not supported in Chat Completions API
         let non_function_tools: Vec<_> = tools_vec
             .iter()
@@ -212,139 +206,10 @@ pub fn convert_to_chat_completions(req: &ResponseRequest) -> Result<ChatCompleti
         Vec::new()
     };
 
-    // Inject missing file operation tools for external providers (Codex omits these for unknown models)
-    // But ONLY if they weren't in the original request (even as non-function tools)
-    let mut injected = Vec::new();
-
-    let tool_exists = |tools: &[ChatTool], name: &str| {
-        tools
-            .iter()
-            .any(|t| matches!(t, ChatTool::Function { function, .. } if function.name == name))
-    };
-
-    let tool_in_original = |name: &str| original_tool_names.iter().any(|n| n == name);
-
-    if !tool_exists(&tools, "apply_patch") && !tool_in_original("apply_patch") {
-        injected.push("apply_patch");
-        tools.push(ChatTool::Function {
-            type_: "function".to_string(),
-            function: ChatFunction {
-                name: "apply_patch".to_string(),
-                description: Some(
-                    "Apply a unified diff patch to create or modify files. Use this to make targeted changes to code.".to_string()
-                ),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "patch": {
-                            "type": "string",
-                            "description": "The patch content in unified diff format, starting with '*** Begin Patch' and ending with '*** End Patch'"
-                        }
-                    },
-                    "required": ["patch"],
-                    "additionalProperties": false
-                }),
-            },
-        });
-    }
-
-    if !tool_exists(&tools, "read_file") && !tool_in_original("read_file") {
-        injected.push("read_file");
-        tools.push(ChatTool::Function {
-            type_: "function".to_string(),
-            function: ChatFunction {
-                name: "read_file".to_string(),
-                description: Some(
-                    "Read the contents of a file from the filesystem.".to_string()
-                ),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Absolute path to the file to read"
-                        },
-                        "offset": {
-                            "type": "number",
-                            "description": "1-indexed line number to start reading from (default: 1)"
-                        },
-                        "limit": {
-                            "type": "number",
-                            "description": "Maximum number of lines to return (default: 2000)"
-                        }
-                    },
-                    "required": ["file_path"],
-                    "additionalProperties": false
-                }),
-            },
-        });
-    }
-
-    if !tool_exists(&tools, "list_dir") && !tool_in_original("list_dir") {
-        injected.push("list_dir");
-        tools.push(ChatTool::Function {
-            type_: "function".to_string(),
-            function: ChatFunction {
-                name: "list_dir".to_string(),
-                description: Some("List files and directories in the specified path.".to_string()),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Absolute path to the directory to list"
-                        },
-                        "recursive": {
-                            "type": "boolean",
-                            "description": "Whether to list recursively (default: false)"
-                        }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                }),
-            },
-        });
-    }
-
-    if !tool_exists(&tools, "grep_files") && !tool_in_original("grep_files") {
-        injected.push("grep_files");
-        tools.push(ChatTool::Function {
-            type_: "function".to_string(),
-            function: ChatFunction {
-                name: "grep_files".to_string(),
-                description: Some(
-                    "Search for a pattern in files using grep-like functionality.".to_string(),
-                ),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "The search pattern (regex)"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "Directory or file path to search in"
-                        },
-                        "case_sensitive": {
-                            "type": "boolean",
-                            "description": "Whether the search is case-sensitive (default: true)"
-                        }
-                    },
-                    "required": ["pattern"],
-                    "additionalProperties": false
-                }),
-            },
-        });
-    }
-
-    if !injected.is_empty() {
-        log::info!(
-            "🔧 Injected {} tool(s) for external provider: {}",
-            injected.len(),
-            injected.join(", ")
-        );
-    }
+    // Tool injection has been removed. Codex CLI now properly sends all tools
+    // (read_file, list_dir, grep_files, etc.) when experimental_supported_tools
+    // is configured in the model family. The proxy simply forwards whatever
+    // tools the client provides.
 
     let tools = if tools.is_empty() { None } else { Some(tools) };
 
