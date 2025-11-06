@@ -321,8 +321,8 @@ EOF
 }
 
 collect_api_key() {
-    echo
-    log_info "You can retrieve your API key from: $API_KEY_URL"
+    echo >&2
+    log_info "You can retrieve your API key from: $API_KEY_URL" >&2
     local key
     local confirmation
     local restored_stdin=""
@@ -344,16 +344,16 @@ collect_api_key() {
     fi
 
     while true; do
-        read -s -p "Enter your chutes.ai API key: " key
-        echo
+        IFS= read -r -s -p "Enter your chutes.ai API key: " key
+        echo >&2
         if [ -z "$key" ]; then
-            log_warn "API key cannot be empty."
+            log_warn "API key cannot be empty." >&2
             continue
         fi
-        read -s -p "Re-enter to confirm: " confirmation
-        echo
+        IFS= read -r -s -p "Re-enter to confirm: " confirmation
+        echo >&2
         if [ "$key" != "$confirmation" ]; then
-            log_warn "Entries did not match. Please try again."
+            log_warn "Entries did not match. Please try again." >&2
             continue
         fi
         break
@@ -364,7 +364,8 @@ collect_api_key() {
         exec 3<&-
     fi
 
-    echo "$key"
+    key=${key//$'\r'/}
+    printf '%s' "$key"
 }
 
 store_api_key() {
