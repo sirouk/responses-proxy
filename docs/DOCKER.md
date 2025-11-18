@@ -46,7 +46,7 @@ Chutes.ai Backend
 **Ports:** 443 (HTTPS), 80 (HTTP/ACME)
 
 **Environment:**
-- `CADDY_DOMAIN` - Your domain (e.g., responses-proxy.chutes.ai)
+- `CADDY_DOMAIN` - Your domain (e.g., responses.chutes.ai)
 - `CADDY_PORT` - HTTPS port (default: 443)
 - `CADDY_TLS` - Enable auto-HTTPS (default: true)
 
@@ -88,7 +88,7 @@ HOST_PORT=8282
 RUST_LOG=info
 
 # Caddy - UPDATE THIS
-CADDY_DOMAIN=responses-proxy.chutes.ai
+CADDY_DOMAIN=responses.chutes.ai
 CADDY_PORT=443
 CADDY_TLS=true
 ```
@@ -107,7 +107,7 @@ docker compose ps
 docker compose logs -f
 
 # Test health
-curl https://responses-proxy.chutes.ai/health
+curl https://responses.chutes.ai/health
 ```
 
 ## Local Development
@@ -210,7 +210,7 @@ docker compose up -d
 
 **Via Caddy (production):**
 ```bash
-curl https://responses-proxy.chutes.ai/health
+curl https://responses.chutes.ai/health
 ```
 
 **Direct to proxy:**
@@ -248,7 +248,7 @@ docker compose logs openai-responses-proxy | grep ERROR
 
 1. **Check DNS:**
 ```bash
-nslookup responses-proxy.chutes.ai
+nslookup responses.chutes.ai
 # Should point to your server IP
 ```
 
@@ -266,7 +266,7 @@ docker compose logs caddy | grep -i cert
 
 4. **Verify domain is reachable:**
 ```bash
-curl -I http://responses-proxy.chutes.ai
+curl -I http://responses.chutes.ai
 ```
 
 ### Proxy not responding

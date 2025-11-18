@@ -21,7 +21,7 @@ const MAX_INPUT_CONTENT_SIZE: usize = 5 * 1024 * 1024;
 const REALTIME_ITEM_OBJECT: &str = "realtime.item";
 use crate::models::{
     App, ChatCompletionChunk, IncompleteDetails, OutputContent, OutputItem, Response,
-    ResponseRequest, StreamEvent, TokenDetails, Usage,
+    ResponseReasoningState, ResponseRequest, StreamEvent, TokenDetails, Usage,
 };
 use crate::services::{
     build_model_list_content, convert_to_chat_completions, extract_client_key,
@@ -106,6 +106,59 @@ fn record_circuit_breaker_failure(cb: Arc<RwLock<crate::models::CircuitBreakerSt
     });
 }
 
+fn warn_unsupported_features(req: &ResponseRequest) {
+    if let Some(include) = &req.include {
+        if !include.is_empty() {
+            log::warn!(
+                "⚠️  'include' values {:?} are not supported by this proxy and will be ignored",
+                include
+            );
+        }
+    }
+
+    if let Some(stream_options) = &req.stream_options {
+        if stream_options.include_obfuscation.is_some() {
+            log::warn!("⚠️  stream_options.include_obfuscation is not supported");
+        }
+    }
+
+    if req.conversation.is_some() {
+        log::warn!("⚠️  conversation references are ignored (proxy is stateless)");
+    }
+
+    if req.previous_response_id.is_some() {
+        log::warn!("⚠️  previous_response_id is ignored (proxy is stateless)");
+    }
+
+    if let Some(reasoning) = &req.reasoning {
+        if reasoning.summary.is_some() || reasoning.generate_summary.is_some() {
+            log::warn!("⚠️  reasoning summary preferences are not supported and will be ignored");
+        }
+    }
+
+    if req.max_tool_calls.is_some() {
+        log::warn!("⚠️  max_tool_calls is not enforced");
+    }
+
+    if let Some(text) = &req.text {
+        if text.verbosity.is_some() {
+            log::warn!("⚠️  text.verbosity is not supported");
+        }
+    }
+
+    if req.safety_identifier.is_some() {
+        log::warn!("⚠️  safety_identifier is not forwarded to the backend");
+    }
+
+    if req.prompt_cache_key.is_some() {
+        log::warn!("⚠️  prompt_cache_key is not forwarded to the backend");
+    }
+
+    if req.service_tier.is_some() {
+        log::warn!("⚠️  service_tier overrides are not supported");
+    }
+}
+
 pub async fn create_response(
     State(app): State<App>,
     headers: HeaderMap,
@@ -151,6 +204,16 @@ pub async fn create_response(
 
     if req.store.unwrap_or(false) {
         log::warn!("⚠️  'store' flag requested but persistence is not supported; ignoring");
+    }
+
+    if req.background.unwrap_or(false) {
+        log::error!("❌ Background responses are not supported by this proxy");
+        return Err((StatusCode::BAD_REQUEST, "background_not_supported"));
+    }
+
+    if req.prompt.is_some() {
+        log::error!("❌ Prompt template references are not supported by this proxy");
+        return Err((StatusCode::BAD_REQUEST, "prompt_reference_not_supported"));
     }
 
     // Circuit breaker check
@@ -211,6 +274,18 @@ pub async fn create_response(
             return Err((StatusCode::PAYLOAD_TOO_LARGE, "input_content_too_large"));
         }
     }
+
+    if let Some(top_logprobs) = req.top_logprobs {
+        if top_logprobs > 20 {
+            log::warn!(
+                "❌ Validation failed: top_logprobs out of range ({})",
+                top_logprobs
+            );
+            return Err((StatusCode::BAD_REQUEST, "invalid_top_logprobs"));
+        }
+    }
+
+    warn_unsupported_features(&req);
 
     // Extract and validate auth
     let client_key = extract_client_key(&headers);
@@ -405,6 +480,20 @@ pub async fn create_response(
     let req_top_p = req.top_p;
     let req_max_output_tokens = req.max_output_tokens;
     let req_metadata = req.metadata.clone();
+    let req_store = Some(false);
+    let req_previous_response_id = req.previous_response_id.clone();
+    let req_reasoning_state = req.reasoning.as_ref().map(ResponseReasoningState::from);
+    let req_background = req.background;
+    let req_max_tool_calls = req.max_tool_calls;
+    let req_text = req.text.clone();
+    let req_prompt = req.prompt.clone();
+    let req_truncation = req.truncation.clone();
+    let req_conversation = req.conversation.clone();
+    let req_top_logprobs = req.top_logprobs;
+    let req_user = req.user.clone();
+    let req_safety_identifier = req.safety_identifier.clone();
+    let req_prompt_cache_key = req.prompt_cache_key.clone();
+    let req_service_tier = req.service_tier.clone();
 
     // Clone request_id for logging in spawn
     let request_id_clone = request_id.clone();
@@ -444,6 +533,20 @@ pub async fn create_response(
                 temperature: req_temperature,
                 top_p: req_top_p,
                 max_output_tokens: req_max_output_tokens,
+                store: req_store,
+                previous_response_id: req_previous_response_id.clone(),
+                reasoning: req_reasoning_state.clone(),
+                background: req_background,
+                max_tool_calls: req_max_tool_calls,
+                text: req_text.clone(),
+                prompt: req_prompt.clone(),
+                truncation: req_truncation.clone(),
+                conversation: req_conversation.clone(),
+                top_logprobs: req_top_logprobs,
+                user: req_user.clone(),
+                safety_identifier: req_safety_identifier.clone(),
+                prompt_cache_key: req_prompt_cache_key.clone(),
+                service_tier: req_service_tier.clone(),
             }),
             event_id: None,
             response_id: None,
@@ -739,15 +842,14 @@ pub async fn create_response(
                                             accumulated_text = cleaned;
 
                                             // Convert each XML call to function call events
-                                            for xml_call in xml_calls.into_iter()
-                                            {
+                                            for xml_call in xml_calls.into_iter() {
                                                 // Find next available index to avoid collisions with native tool calls
                                                 while tool_calls.contains_key(&next_xml_index) {
                                                     next_xml_index += 1;
                                                 }
                                                 let call_idx = next_xml_index;
                                                 next_xml_index += 1;
-                                                
+
                                                 let call_id =
                                                     format!("call_xml_{}_{}", request_id, call_idx);
                                                 let item_id = call_id.clone();
@@ -1268,6 +1370,11 @@ pub async fn create_response(
         }
 
         // Send response.completed event
+        let mut final_reasoning_state = req_reasoning_state.clone();
+        if final_reasoning_state.is_none() && reasoning_started {
+            final_reasoning_state = Some(ResponseReasoningState::default());
+        }
+
         let mut output_items = vec![];
 
         // Add reasoning item if present
@@ -1369,6 +1476,20 @@ pub async fn create_response(
                 temperature: req_temperature,
                 top_p: req_top_p,
                 max_output_tokens: req_max_output_tokens,
+                store: req_store,
+                previous_response_id: req_previous_response_id.clone(),
+                reasoning: final_reasoning_state.clone(),
+                background: req_background,
+                max_tool_calls: req_max_tool_calls,
+                text: req_text.clone(),
+                prompt: req_prompt.clone(),
+                truncation: req_truncation.clone(),
+                conversation: req_conversation.clone(),
+                top_logprobs: req_top_logprobs,
+                user: req_user.clone(),
+                safety_identifier: req_safety_identifier.clone(),
+                prompt_cache_key: req_prompt_cache_key.clone(),
+                service_tier: req_service_tier.clone(),
             }),
             item_id: None,
             output_index: None,
@@ -1437,6 +1558,17 @@ fn estimate_input_size(input: &crate::models::ResponseInput) -> usize {
                                 ContentPart::InputText { text }
                                 | ContentPart::OutputText { text } => text.len(),
                                 ContentPart::InputImage { image_url } => image_url.url.len(),
+                                ContentPart::InputFile {
+                                    file_id,
+                                    filename,
+                                    file_url,
+                                    file_data,
+                                } => {
+                                    file_id.as_ref().map(|s| s.len()).unwrap_or(0)
+                                        + filename.as_ref().map(|s| s.len()).unwrap_or(0)
+                                        + file_url.as_ref().map(|s| s.len()).unwrap_or(0)
+                                        + file_data.as_ref().map(|s| s.len()).unwrap_or(0)
+                                }
                                 ContentPart::Reasoning {
                                     text,
                                     encrypted_content,
@@ -1566,6 +1698,20 @@ fn send_error_response(
                 temperature: None,
                 top_p: None,
                 max_output_tokens: None,
+                store: Some(false),
+                previous_response_id: None,
+                reasoning: None,
+                background: None,
+                max_tool_calls: None,
+                text: None,
+                prompt: None,
+                truncation: None,
+                conversation: None,
+                top_logprobs: None,
+                user: None,
+                safety_identifier: None,
+                prompt_cache_key: None,
+                service_tier: None,
             }),
             item_id: None,
             output_index: None,

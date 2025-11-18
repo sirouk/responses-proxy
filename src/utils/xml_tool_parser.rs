@@ -95,7 +95,10 @@ pub fn extract_xml_tool_calls(text: &str) -> (String, Vec<ParsedToolCall>) {
         // Convert params to JSON string
         let arguments = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
 
-        calls.push(ParsedToolCall { name: function_name, arguments });
+        calls.push(ParsedToolCall {
+            name: function_name,
+            arguments,
+        });
 
         // Remove this XML from cleaned text
         cleaned = format!("{}{}", &cleaned[..absolute_start], &cleaned[end_tag..]);

@@ -104,7 +104,7 @@ A high-performance Rust proxy that translates OpenAI's Responses API to Chat Com
 **Production:**
 ```bash
 ./deploy.sh
-# Access: https://responses-proxy.chutes.ai
+# Access: https://responses.chutes.ai
 ```
 
 **Development:**

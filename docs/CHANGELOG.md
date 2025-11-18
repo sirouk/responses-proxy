@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] - 2025-11-18
+
+### Added
+- Support for the latest OpenAI Responses parameters (e.g. `include`, `stream_options`, `conversation`, `service_tier`, `text.format`, `top_logprobs`, `user`, `safety_identifier`, `prompt_cache_key`) at the request layer so SDKs no longer 422 on newer fields.
+- Structured Outputs parity by forwarding `text.format` to Chat Completions `response_format`, plus propagation of `user` and logprob hints to the backend.
+- Extended response payloads to echo modern metadata (`reasoning`, `store`, `background`, `conversation`, `top_logprobs`, etc.) so downstream clients keep their UI expectations.
+
+### Changed
+- Background jobs and reusable prompt templates are now rejected with explicit `400` responses instead of silently doing the wrong thing.
+- Requests that include `input_file` content parts now error fast with a descriptive message because the Chat Completions backend cannot dereference OpenAI file IDs.
+- Unsupported knobs (service tiers, stream obfuscation, reasoning summaries, etc.) emit structured warnings so operators can see why the proxy ignored them.
+
 ## [0.1.0] - 2025-11-04
 
 ### Initial Release
@@ -26,7 +38,7 @@
 - Docker and Docker Compose support
 - One-command deployment script
 - Auto-HTTPS via Caddy + Let's Encrypt
-- Configured for responses-proxy.chutes.ai
+- Configured for responses.chutes.ai
 
 #### Documentation
 - 9 comprehensive guides

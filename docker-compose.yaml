@@ -30,7 +30,7 @@ services:
     container_name: responses-proxy-caddy
     environment:
       - HOST_PORT=${HOST_PORT:-8282}
-      - CADDY_DOMAIN=${CADDY_DOMAIN:-responses-proxy.chutes.ai}
+      - CADDY_DOMAIN=${CADDY_DOMAIN:-responses.chutes.ai}
       - CADDY_PORT=${CADDY_PORT:-443}
       - CADDY_TLS=${CADDY_TLS:-true}
     ports:

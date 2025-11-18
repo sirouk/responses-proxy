@@ -53,7 +53,7 @@ File Operation Best Practices:\n\
                     match item {
                         ResponseInputItem::Message { role, content } => {
                             let (mut msg_content, content_reasoning) =
-                                convert_response_content(content);
+                                convert_response_content(content)?;
 
                             // If content has inline reasoning, accumulate it
                             if let Some(content_think) = content_reasoning {
@@ -175,6 +175,17 @@ File Operation Best Practices:\n\
         }
     }
 
+    let response_format = req.text.as_ref().and_then(|t| t.format.clone());
+
+    let (logprobs, top_logprobs) = match req.top_logprobs {
+        Some(0) => {
+            log::warn!("⚠️ top_logprobs=0 requested - ignoring logprob request");
+            (None, None)
+        }
+        Some(value) => (Some(true), Some(value)),
+        None => (None, None),
+    };
+
     // Convert tools if provided - ONLY function tools are supported
     // Simply forward tools from the client; no injection needed
     let tools = if let Some(tools_vec) = req.tools.as_ref() {
@@ -236,18 +247,22 @@ File Operation Best Practices:\n\
         max_tokens: req.max_output_tokens,
         temperature: req.temperature,
         top_p: req.top_p,
+        response_format,
         tools,
         tool_choice,
         parallel_tool_calls: req.parallel_tool_calls,
+        user: req.user.clone(),
+        logprobs,
+        top_logprobs,
         stream: req.stream.unwrap_or(false),
     })
 }
 
 /// Convert ResponseContent to JSON value for Chat Completions
 /// Returns (content_value, extracted_reasoning_text)
-fn convert_response_content(content: &ResponseContent) -> (Value, Option<String>) {
+fn convert_response_content(content: &ResponseContent) -> Result<(Value, Option<String>), String> {
     match content {
-        ResponseContent::String(text) => (json!(text), None),
+        ResponseContent::String(text) => Ok((json!(text), None)),
         ResponseContent::Array(parts) => {
             let mut reasoning_text = String::new();
             let mut converted: Vec<Value> = Vec::new();
@@ -267,6 +282,9 @@ fn convert_response_content(content: &ResponseContent) -> (Value, Option<String>
                                 "url": image_url.url
                             }
                         }));
+                    }
+                    ContentPart::InputFile { .. } => {
+                        return Err("input_file_content_not_supported".to_string());
                     }
                     ContentPart::Reasoning { text, .. } => {
                         // Reasoning within message content - accumulate for <think> tags
@@ -299,23 +317,23 @@ fn convert_response_content(content: &ResponseContent) -> (Value, Option<String>
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                (
+                Ok((
                     json!(text),
                     if has_reasoning {
                         Some(reasoning_text)
                     } else {
                         None
                     },
-                )
+                ))
             } else {
-                (
+                Ok((
                     json!(converted),
                     if has_reasoning {
                         Some(reasoning_text)
                     } else {
                         None
                     },
-                )
+                ))
             }
         }
     }

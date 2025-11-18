@@ -9,7 +9,7 @@ cp .env.sample .env
 
 Edit `.env` and set:
 ```bash
-CADDY_DOMAIN=responses-proxy.chutes.ai
+CADDY_DOMAIN=responses.chutes.ai
 ENABLE_LOG_VOLUME=false  # enable only when you need on-disk dumps
 ```
 
@@ -42,7 +42,7 @@ docker compose logs -f
 
 **Simple request:**
 ```bash
-curl -N https://responses-proxy.chutes.ai/v1/responses \
+curl -N https://responses.chutes.ai/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer cpk_your_api_key" \
   -d '{
@@ -99,13 +99,13 @@ curl http://localhost:8180/v1/responses \
 # .env
 CADDY_TLS=true
 CADDY_PORT=443
-CADDY_DOMAIN=responses-proxy.chutes.ai
+CADDY_DOMAIN=responses.chutes.ai
 
 # Deploy
 ./deploy.sh
 
 # Access
-curl https://responses-proxy.chutes.ai/v1/responses \
+curl https://responses.chutes.ai/v1/responses \
   -H "Authorization: Bearer cpk_your_key" \
   -d '{"model":"gpt-4o","input":"test"}'
 ```
@@ -131,10 +131,10 @@ watch -n 5 'curl -s http://localhost:8282/health | jq'
 
 ## Troubleshooting
 
-**Problem:** Can't reach https://responses-proxy.chutes.ai
+**Problem:** Can't reach https://responses.chutes.ai
 
 **Solution:**
-1. Check DNS: `nslookup responses-proxy.chutes.ai`
+1. Check DNS: `nslookup responses.chutes.ai`
 2. Check ports: `netstat -tulpn | grep -E ':80|:443'`
 3. Check Caddy logs: `docker compose logs caddy`
 4. Test direct: `curl http://localhost:8282/health`

@@ -53,6 +53,17 @@ pub enum ContentPart {
     OutputText { text: String },
     #[serde(rename = "input_image")]
     InputImage { image_url: ImageUrl },
+    #[serde(rename = "input_file")]
+    InputFile {
+        #[serde(default)]
+        file_id: Option<String>,
+        #[serde(default)]
+        filename: Option<String>,
+        #[serde(default)]
+        file_url: Option<String>,
+        #[serde(default)]
+        file_data: Option<String>,
+    },
     #[serde(rename = "reasoning")]
     Reasoning {
         text: String,
@@ -171,6 +182,61 @@ pub struct FunctionChoice {
     pub name: String,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct StreamOptions {
+    #[serde(default)]
+    pub include_obfuscation: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum ConversationReference {
+    Id(String),
+    Object { id: String },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct ReasoningConfig {
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub generate_summary: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ResponseTextConfig {
+    #[serde(default)]
+    pub format: Option<Value>,
+    #[serde(default)]
+    pub verbosity: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ResponsePrompt {
+    pub id: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub variables: Option<Value>,
+}
+
+#[derive(Serialize, Debug, Clone, Default)]
+pub struct ResponseReasoningState {
+    pub effort: Option<String>,
+    pub summary: Option<String>,
+}
+
+impl From<&ReasoningConfig> for ResponseReasoningState {
+    fn from(config: &ReasoningConfig) -> Self {
+        Self {
+            effort: config.effort.clone(),
+            summary: config.summary.clone(),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct ResponseRequest {
     #[serde(default)]
@@ -197,6 +263,36 @@ pub struct ResponseRequest {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub store: Option<bool>,
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    #[serde(default)]
+    pub background: Option<bool>,
+    #[serde(default)]
+    pub conversation: Option<ConversationReference>,
+    #[serde(default)]
+    pub previous_response_id: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<ReasoningConfig>,
+    #[serde(default)]
+    pub stream_options: Option<StreamOptions>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub text: Option<ResponseTextConfig>,
+    #[serde(default)]
+    pub prompt: Option<ResponsePrompt>,
+    #[serde(default)]
+    pub truncation: Option<String>,
+    #[serde(default)]
+    pub top_logprobs: Option<u8>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub safety_identifier: Option<String>,
+    #[serde(default)]
+    pub prompt_cache_key: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
 }
 
 // ---------- Response Models (OpenAI Responses API) ----------
@@ -233,6 +329,34 @@ pub struct Response {
     pub top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ResponseReasoningState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<ResponseTextConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<ResponsePrompt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]

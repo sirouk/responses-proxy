@@ -2,7 +2,7 @@
 
 Production-ready Rust proxy that translates OpenAI Responses API to Chat Completions format.
 
-**Domain:** responses-proxy.chutes.ai  
+**Domain:** responses.chutes.ai  
 **Backend:** llm.chutes.ai (52 models)  
 **Performance:** 1-2ms overhead, 1000+ req/s
 
@@ -29,7 +29,7 @@ Production-ready Rust proxy that translates OpenAI Responses API to Chat Complet
 **TL;DR:**
 ```bash
 ./deploy.sh
-# Access: https://responses-proxy.chutes.ai
+# Access: https://responses.chutes.ai
 ```
 
 **Docker with Caddy (Production - Port 443):**
@@ -42,7 +42,7 @@ cp .env.sample .env
 ./deploy.sh
 
 # The proxy will be available at:
-# https://responses-proxy.chutes.ai (with auto-HTTPS)
+# https://responses.chutes.ai (with auto-HTTPS)
 # http://localhost:8282 (direct to proxy)
 ```
 
@@ -68,7 +68,7 @@ curl -N http://localhost:8282/v1/responses \
 
 **Or via Caddy (production):**
 ```bash
-curl -N https://responses-proxy.chutes.ai/v1/responses \
+curl -N https://responses.chutes.ai/v1/responses \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer cpk_your_key' \
   -d '{
@@ -96,7 +96,7 @@ cp .env.sample .env
 | `BACKEND_TIMEOUT_SECS` | `600` | Backend request timeout |
 | `ENABLE_LOG_VOLUME` | `false` | Enable verbose body dumps (writes to `LOG_DIR`) |
 | `LOG_DIR` | `logs` | Directory for optional request/stream dumps |
-| `CADDY_DOMAIN` | `responses-proxy.chutes.ai` | Domain for Caddy |
+| `CADDY_DOMAIN` | `responses.chutes.ai` | Domain for Caddy |
 | `CADDY_PORT` | `443` | Caddy HTTPS port |
 | `CADDY_TLS` | `true` | Enable auto-HTTPS (set to `false` for HTTP) |
 
@@ -111,7 +111,7 @@ HOST_PORT=8282
 RUST_LOG=info
 
 # Caddy (for production deployment)
-CADDY_DOMAIN=responses-proxy.chutes.ai
+CADDY_DOMAIN=responses.chutes.ai
 CADDY_PORT=443
 CADDY_TLS=true
 ```
@@ -403,7 +403,7 @@ cp .env.sample .env
 docker compose up -d
 
 # Access
-curl https://responses-proxy.chutes.ai/health
+curl https://responses.chutes.ai/health
 ```
 
 **Without Caddy (Development):**

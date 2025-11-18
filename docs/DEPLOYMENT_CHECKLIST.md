@@ -1,18 +1,18 @@
-# Deployment Checklist for responses-proxy.chutes.ai
+# Deployment Checklist for responses.chutes.ai
 
 ## Pre-Deployment
 
 - [ ] Server provisioned with public IP
 - [ ] Docker and Docker Compose installed
 - [ ] Ports 80 and 443 open in firewall
-- [ ] DNS A record: `responses-proxy.chutes.ai` → server IP
+- [ ] DNS A record: `responses.chutes.ai` → server IP
 - [ ] API key obtained from Chutes.ai
 - [ ] Repository cloned to server
 
 ## Configuration
 
 - [ ] Copy `.env.sample` to `.env`
-- [ ] Set `CADDY_DOMAIN=responses-proxy.chutes.ai` in `.env`
+- [ ] Set `CADDY_DOMAIN=responses.chutes.ai` in `.env`
 - [ ] Verify `BACKEND_URL=https://llm.chutes.ai/v1/chat/completions`
 - [ ] Verify Caddyfile references correct container name
 
@@ -26,10 +26,10 @@
 ## Verification
 
 - [ ] Health check (direct): `curl http://localhost:8282/health`
-- [ ] Health check (via Caddy): `curl https://responses-proxy.chutes.ai/health`
+- [ ] Health check (via Caddy): `curl https://responses.chutes.ai/health`
 - [ ] Test request (replace with real API key):
 ```bash
-curl -N https://responses-proxy.chutes.ai/v1/responses \
+curl -N https://responses.chutes.ai/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer cpk_YOUR_KEY" \
   -d '{
@@ -42,7 +42,7 @@ curl -N https://responses-proxy.chutes.ai/v1/responses \
 
 ## Post-Deployment
 
-- [ ] Verify TLS certificate: `curl -vI https://responses-proxy.chutes.ai 2>&1 | grep -i "subject\|issuer"`
+- [ ] Verify TLS certificate: `curl -vI https://responses.chutes.ai 2>&1 | grep -i "subject\|issuer"`
 - [ ] Test from external network
 - [ ] Monitor logs for any errors: `docker compose logs -f`
 - [ ] Set up monitoring/alerting (optional)
@@ -62,7 +62,7 @@ If deployment fails:
 
 1. **Check DNS:**
 ```bash
-nslookup responses-proxy.chutes.ai
+nslookup responses.chutes.ai
 # Should return your server IP
 ```
 

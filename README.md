@@ -34,7 +34,7 @@ For deeper background, see the companion docs in `docs/` (e.g. `docs/PROJECT_SUM
 
    [model_providers."chutes-ai"]
    name = "Chutes AI via responses proxy"
-   base_url = "https://responses-proxy.chutes.ai/v1"
+   base_url = "https://responses.chutes.ai/v1"
    env_key = "MY_PROVIDER_API_KEY"
    wire_api = "responses"
 
@@ -65,7 +65,7 @@ For deeper background, see the companion docs in `docs/` (e.g. `docs/PROJECT_SUM
    codex
    ```
 
-   Pick the `chutes-ai` provider inside the UI; requests will flow through `https://responses-proxy.chutes.ai/v1`.
+   Pick the `chutes-ai` provider inside the UI; requests will flow through `https://responses.chutes.ai/v1`.
 
 > ℹ️ Only `function` tools are forwarded; Codex options such as `web_search_request` may fall back gracefully if the backend rejects them. Reasoning effort hints are passed through to the backend model.
 
@@ -90,7 +90,7 @@ Environment variables (see `docs/QUICKSTART.md` for exhaustive notes):
 | `RUST_LOG` | `info` | Log level (`error`…`trace`) |
 | `ENABLE_LOG_VOLUME` | `false` | When `true`, dumps requests/streams to `LOG_DIR` |
 | `LOG_DIR` | `logs` | Base directory for optional dumps |
-| `CADDY_DOMAIN` | `responses-proxy.chutes.ai` | TLS host for Caddy deployment |
+| `CADDY_DOMAIN` | `responses.chutes.ai` | TLS host for Caddy deployment |
 | `CADDY_PORT` | `443` | Exposed HTTPS port |
 
 Logging dumps are gated behind `ENABLE_LOG_VOLUME`; with the flag disabled the proxy never writes request or stream bodies to disk.
@@ -105,6 +105,8 @@ Key behaviours:
 - **Request validation**: size limits on inputs, instructions, and tool counts.
 - **Tool support**: forwards `function` tools, injects missing file utilities for external providers, and converts stray XML-style tool call text into native function events.
 - **Reasoning models**: captures `reasoning_content`, emits `<think>`-compatible events, and surfaces reasoning output items alongside final content.
+- **Responses parity**: accepts modern Responses parameters like `include`, `stream_options`, `text.format`, `top_logprobs`, and `user`, forwarding structured-output formats and logprob hints to the backend while warning (or rejecting) unsupported knobs such as `background`, `prompt` templates, and `service_tier`.
+- **File inputs**: rejects `input_file` content parts with a clear error because the Chat Completions backend cannot dereference OpenAI file IDs; clients must inline file contents before sending.
 - **No persistence**: the optional `store` flag is accepted but ignored; a warning is logged when provided.
 
 ## Operational Notes
