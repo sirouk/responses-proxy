@@ -11,6 +11,8 @@ ENV_FILE="${CONFIG_DIR}/env"
 ENV_VAR_NAME="MY_PROVIDER_API_KEY"
 API_KEY_URL="https://chutes.ai/app/api"
 DEFAULT_BASE_URL="https://responses.chutes.ai/v1"
+MODELS_API_BASE_URL="https://llm.chutes.ai"
+DEFAULT_MODEL="Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
 RUSTUP_INSTALL_SCRIPT="https://sh.rustup.rs"
 CODEX_GIT_URL="https://github.com/chutesai/codex.git"
 CODEX_FORK_DIR="${HOME}/codex-fork"
@@ -285,7 +287,185 @@ prompt_responses_base_url() {
     fi
 }
 
+select_model() {
+    local api_key="$1"
+    local default_model="$DEFAULT_MODEL"
+
+    if [ -z "$api_key" ]; then
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_warn "curl not available; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_warn "python3 not available; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    log_info "Fetching available models from ${MODELS_API_BASE_URL}..." >&2
+
+    local response=""
+    if ! response=$(curl -fsS -H "Authorization: Bearer $api_key" "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
+        log_warn "Unable to retrieve models; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    if [ -z "$response" ]; then
+        log_warn "Models response empty; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    local models_output=""
+    if ! models_output=$(printf '%s' "$response" | python3 - <<'PY'
+import json
+import sys
+
+
+def to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+try:
+    payload = json.load(sys.stdin)
+except json.JSONDecodeError:
+    sys.exit(1)
+
+models = payload.get("data")
+if not isinstance(models, list):
+    sys.exit(1)
+
+rows = []
+for idx, model in enumerate(models, 1):
+    model_id = model.get("id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        continue
+
+    price = model.get("price") or {}
+    pricing = model.get("pricing") or {}
+    in_price = None
+    out_price = None
+
+    if isinstance(price, dict):
+        input_price = price.get("input")
+        if isinstance(input_price, dict):
+            in_price = to_float(input_price.get("usd"))
+        output_price = price.get("output")
+        if isinstance(output_price, dict):
+            out_price = to_float(output_price.get("usd"))
+
+    if in_price is None and isinstance(pricing, dict):
+        in_price = to_float(pricing.get("prompt"))
+    if out_price is None and isinstance(pricing, dict):
+        out_price = to_float(pricing.get("completion"))
+
+    features = model.get("supported_features") or model.get("capabilities") or []
+    think = False
+    if isinstance(features, list):
+        think = any(isinstance(feat, str) and feat.lower() == "thinking" for feat in features)
+    elif isinstance(features, dict):
+        think = any(isinstance(name, str) and name.lower() == "thinking" and bool(val) for name, val in features.items())
+
+    if in_price is None and out_price is None:
+        price_tag = "n/a"
+    else:
+        in_str = f"{in_price:.2f}" if in_price is not None else "0.00"
+        out_str = f"{out_price:.2f}" if out_price is not None else "0.00"
+        price_tag = f"${in_str}/${out_str}"
+
+    rows.append(f"{idx}|{model_id}|{price_tag}|{'*' if think else ' '}")
+
+if not rows:
+    sys.exit(1)
+
+sys.stdout.write("\n".join(rows))
+PY
+    ); then
+        models_output=""
+    fi
+
+    if [ -z "$models_output" ]; then
+        log_warn "No models returned; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    local model_rows=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && model_rows+=("$line")
+    done <<<"$models_output"
+
+    local total=${#model_rows[@]}
+    if [ "$total" -eq 0 ]; then
+        log_warn "Parsed model list empty; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
+    fi
+
+    local default_selection=1
+    local entry
+    for entry in "${model_rows[@]}"; do
+        IFS='|' read -r num mid _rest <<<"$entry"
+        if [ "$mid" = "$default_model" ]; then
+            default_selection="$num"
+            break
+        fi
+    done
+
+    printf '\n' >&2
+    log_info "Available models (per 1M tokens input/output):" >&2
+    printf '\n' >&2
+
+    for entry in "${model_rows[@]}"; do
+        IFS='|' read -r num mid price think <<<"$entry"
+        printf "  %2s) %s %-50s %s\n" "$num" "$think" "$mid" "$price" >&2
+    done
+
+    printf '\n' >&2
+
+    while true; do
+        local selection=""
+        if ! read -r -p "Select a model (1-${total}) [default: ${default_selection}]: " selection </dev/tty; then
+            log_warn "Unable to read selection; defaulting to ${default_model}" >&2
+            printf '%s\n' "$default_model"
+            return
+        fi
+
+        selection=${selection:-$default_selection}
+
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "$total" ]; then
+            local chosen=""
+            for entry in "${model_rows[@]}"; do
+                IFS='|' read -r num mid price think <<<"$entry"
+                if [ "$num" = "$selection" ]; then
+                    chosen="$mid"
+                    break
+                fi
+            done
+
+            if [ -n "$chosen" ]; then
+                log_success "Selected model: $chosen" >&2
+                printf '%s\n' "$chosen"
+                return
+            fi
+        fi
+
+        log_warn "Invalid selection. Enter a number between 1 and ${total}." >&2
+    done
+}
+
 write_codex_config() {
+    local selected_model="${1:-$DEFAULT_MODEL}"
     ensure_dir_exists "$CONFIG_DIR"
     chmod 700 "$CONFIG_DIR" >/dev/null 2>&1 || true
 
@@ -310,7 +490,7 @@ write_codex_config() {
     cat <<EOF >"$CONFIG_FILE"
 # Generated by ${SCRIPT_NAME} on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 model_provider = "chutes-ai"
-model = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
+model = "${selected_model}"
 # model = "openai/gpt-4o-mini"
 model_reasoning_effort = "high"
 
@@ -407,12 +587,19 @@ main() {
     echo "==> Starting ${SCRIPT_NAME}"
 
     install_codex_cli
-    write_codex_config
 
     local api_key
     api_key=$(collect_api_key)
+
+    local selected_model
+    selected_model=$(select_model "$api_key")
+
+    write_codex_config "$selected_model"
+
     store_api_key "$api_key"
+
     unset api_key
+    unset selected_model
 
     echo
     log_success "Codex environment prepared."
