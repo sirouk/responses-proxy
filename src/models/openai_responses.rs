@@ -293,6 +293,20 @@ pub struct ResponseRequest {
     pub prompt_cache_key: Option<String>,
     #[serde(default)]
     pub service_tier: Option<String>,
+    #[serde(default)]
+    pub messages: Option<Vec<Value>>,
+    #[serde(default)]
+    pub stop: Option<Value>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default)]
+    pub logit_bias: Option<Value>,
+    #[serde(default)]
+    pub response_format: Option<Value>,
 }
 
 // ---------- Response Models (OpenAI Responses API) ----------

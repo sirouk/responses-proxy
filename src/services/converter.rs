@@ -34,6 +34,15 @@ File Operation Best Practices:\n\
         }
     }
 
+    // Passthrough messages if provided (Chat Completions compatibility)
+    if let Some(req_messages) = &req.messages {
+        for msg in req_messages {
+            if let Ok(chat_msg) = serde_json::from_value::<ChatMessage>(msg.clone()) {
+                messages.push(chat_msg);
+            }
+        }
+    }
+
     // Convert input to messages
     if let Some(input) = &req.input {
         match input {
@@ -175,7 +184,11 @@ File Operation Best Practices:\n\
         }
     }
 
-    let response_format = req.text.as_ref().and_then(|t| t.format.clone());
+    let response_format = req
+        .text
+        .as_ref()
+        .and_then(|t| t.format.clone())
+        .or_else(|| req.response_format.clone());
 
     let (logprobs, top_logprobs) = match req.top_logprobs {
         Some(0) => {
@@ -255,6 +268,14 @@ File Operation Best Practices:\n\
         logprobs,
         top_logprobs,
         stream: req.stream.unwrap_or(false),
+        stop: req.stop.clone(),
+        frequency_penalty: req.frequency_penalty,
+        presence_penalty: req.presence_penalty,
+        seed: req.seed,
+        logit_bias: req.logit_bias.clone(),
+        metadata: req.metadata.clone(),
+        service_tier: req.service_tier.clone(),
+        store: req.store,
     })
 }
 
