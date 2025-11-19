@@ -73,6 +73,30 @@ pub struct ChatCompletionRequest {
     pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>, // Number of choices to generate
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<Value>, // Stream options for SSE
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>, // New field replacing max_tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>, // Output modalities (text, audio)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<Value>, // Predicted output configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>, // Reasoning effort level
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>, // Response verbosity
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_identifier: Option<String>, // Safety tracking identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>, // Cache optimization key
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_options: Option<Value>, // Web search configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_call: Option<Value>, // Deprecated: use tool_choice
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub functions: Option<Vec<Value>>, // Deprecated: use tools
 }
 
 // ---------- Chat Completions Response (from Chutes.ai) ----------

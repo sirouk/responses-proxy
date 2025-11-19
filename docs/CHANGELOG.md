@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.4] - 2025-11-19
+
+### Added
+- **100% Chat Completions API Compatibility**: The proxy now fully supports EVERY parameter in the OpenAI Chat Completions API specification at the `/v1/responses` endpoint:
+  - Direct `messages` array format (hybrid mode)
+  - Both `max_tokens` and `max_output_tokens` field names
+  - `max_completion_tokens` - the newer field replacing `max_tokens`
+  - `logprobs` boolean flag alongside `top_logprobs`
+  - `n` parameter - generate multiple completion choices
+  - `stream_options` - configure streaming behavior
+  - `modalities` - specify output types (text, audio)
+  - `prediction` - predicted output configuration for faster responses
+  - `reasoning_effort` - control reasoning model effort levels
+  - `verbosity` - control response verbosity
+  - `safety_identifier` - safety tracking for abuse prevention
+  - `prompt_cache_key` - cache optimization for similar requests
+  - `web_search_options` - web search configuration
+  - Deprecated parameters: `function_call` and `functions` (superseded by `tool_choice` and `tools`)
+  - All standard Chat Completions parameters (`stop`, `frequency_penalty`, `presence_penalty`, `seed`, `logit_bias`)
+- **Model-Aware System Prompts**: The proxy now queries backend model capabilities (`/v1/models`) to intelligently adapt system instructions:
+  - **Native Tooling**: Enforces standard JSON tool calling for models that support it.
+  - **XML Fallback**: Injects XML tool calling instructions (`<function=name>`) for legacy/Codex models that lack native function calling support.
+- **XML Tool Delta Events**: Added `function_call_arguments.delta` emission for converted XML tool calls. This ensures clients expecting argument deltas (standard in the Response API) receive them, correcting previous behavior where only the final result was sent.
+
+### Fixed
+- **Streaming Fidelity**: Removed aggressive de-duplication logic that incorrectly dropped valid repeating text deltas (e.g., ensuring "good" doesn't become "god" if split across chunks).
+
 ## [0.1.2] - 2025-11-18
 
 ### Added

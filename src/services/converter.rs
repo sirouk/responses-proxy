@@ -5,37 +5,63 @@ use crate::models::{
 use serde_json::{json, Value};
 
 /// Convert OpenAI Responses API request to Chat Completions format
-pub fn convert_to_chat_completions(req: &ResponseRequest) -> Result<ChatCompletionRequest, String> {
+pub fn convert_to_chat_completions(
+    req: &ResponseRequest,
+    supports_native_tools: bool,
+) -> Result<ChatCompletionRequest, String> {
     let model = req.model.as_ref().ok_or("Model is required")?.clone();
 
     let mut messages = Vec::new();
 
-    // Add instructions as system message if provided
-    if let Some(instructions) = &req.instructions {
-        if !instructions.is_empty() {
-            // Append tool calling and file operation guidance for Chat Completions compatibility
-            let tool_override = "\n\n---\n\nIMPORTANT: Tool Calling Format Override\n\
+    // Prepare tool overrides
+    let native_tool_override = "\n\n---\n\nIMPORTANT: Tool Calling Format Override\n\
 When calling functions/tools, you MUST use the standard OpenAI Chat Completions JSON format, NOT any XML or custom syntax. \
-The system will automatically handle tool execution. Never output tool calls as text - use the native function calling mechanism.\n\n\
-File Operation Best Practices:\n\
+The system will automatically handle tool execution. Never output tool calls as text - use the native function calling mechanism.";
+
+    let xml_tool_override = "\n\n---\n\nIMPORTANT: Tool Calling Format Override\n\
+To call a function, you MUST use the following XML format:\n\
+<function=function_name>\n\
+<parameter=param_name>value</parameter>\n\
+...\n\
+</function>\n\
+\n\
+Do not use JSON tool calls. Use the XML format above.";
+
+    let file_ops_guidance = "\n\nFile Operation Best Practices:\n\
 - Use relative paths (e.g. 'test.py', 'src/main.rs') for files in the workspace\n\
 - Read each file ONCE before editing - do not re-read files you've already successfully read\n\
 - After receiving file contents from read_file, proceed directly to editing without redundant reads\n\
 - For apply_patch, include 3-5 lines of surrounding context for reliable matching\n\
 - Never announce \"I will read the file\" after you've already read it - just use the content you received";
-            let enhanced_instructions = format!("{}{}", instructions, tool_override);
 
-            messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: Some(json!(enhanced_instructions)),
-                tool_calls: None,
-                tool_call_id: None,
-            });
+    // Determine which instructions to use
+    let mut system_instructions = req.instructions.clone().unwrap_or_default();
+
+    // Only append overrides if tools are actually present or requested
+    if req.tools.is_some() {
+        if supports_native_tools {
+            system_instructions.push_str(native_tool_override);
+        } else {
+            system_instructions.push_str(xml_tool_override);
         }
+        // Append general guidance
+        system_instructions.push_str(file_ops_guidance);
     }
 
-    // Passthrough messages if provided (Chat Completions compatibility)
+    // Add instructions as system message if not empty
+    if !system_instructions.is_empty() {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: Some(json!(system_instructions)),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    // Passthrough messages if provided (hybrid Chat Completions compatibility)
+    // This allows advanced users to send pre-formatted messages while using the Responses endpoint
     if let Some(req_messages) = &req.messages {
+        log::debug!("📨 Processing {} pre-formatted messages (hybrid mode)", req_messages.len());
         for msg in req_messages {
             if let Ok(chat_msg) = serde_json::from_value::<ChatMessage>(msg.clone()) {
                 messages.push(chat_msg);
@@ -190,13 +216,16 @@ File Operation Best Practices:\n\
         .and_then(|t| t.format.clone())
         .or_else(|| req.response_format.clone());
 
-    let (logprobs, top_logprobs) = match req.top_logprobs {
-        Some(0) => {
+    // Handle logprobs - support both Responses API (top_logprobs) and Chat Completions (logprobs + top_logprobs)
+    let (logprobs, top_logprobs) = match (req.logprobs, req.top_logprobs) {
+        (_, Some(0)) => {
             log::warn!("⚠️ top_logprobs=0 requested - ignoring logprob request");
             (None, None)
         }
-        Some(value) => (Some(true), Some(value)),
-        None => (None, None),
+        (Some(true), tl) => (Some(true), tl.or(Some(5))), // Default to 5 if logprobs=true but no top_logprobs
+        (_, Some(value)) => (Some(true), Some(value)),
+        (None, None) => (None, None),
+        (Some(false), None) => (None, None),
     };
 
     // Convert tools if provided - ONLY function tools are supported
@@ -257,7 +286,7 @@ File Operation Best Practices:\n\
     Ok(ChatCompletionRequest {
         model,
         messages,
-        max_tokens: req.max_output_tokens,
+        max_tokens: req.max_output_tokens.or(req.max_tokens), // Support both field names
         temperature: req.temperature,
         top_p: req.top_p,
         response_format,
@@ -276,6 +305,18 @@ File Operation Best Practices:\n\
         metadata: req.metadata.clone(),
         service_tier: req.service_tier.clone(),
         store: req.store,
+        n: req.n,
+        stream_options: req.stream_options.as_ref().map(|so| serde_json::to_value(so).unwrap_or(json!({}))),
+        max_completion_tokens: req.max_completion_tokens,
+        modalities: req.modalities.clone(),
+        prediction: req.prediction.clone(),
+        reasoning_effort: req.reasoning_effort.clone(),
+        verbosity: req.verbosity.clone(),
+        safety_identifier: req.safety_identifier.clone(),
+        prompt_cache_key: req.prompt_cache_key.clone(),
+        web_search_options: req.web_search_options.clone(),
+        function_call: req.function_call.clone(),
+        functions: req.functions.clone(),
     })
 }
 

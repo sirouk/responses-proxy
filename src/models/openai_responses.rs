@@ -248,6 +248,8 @@ pub struct ResponseRequest {
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
+    pub max_tokens: Option<u32>, // Chat Completions compatibility (alias for max_output_tokens)
+    #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f32>,
@@ -286,11 +288,31 @@ pub struct ResponseRequest {
     #[serde(default)]
     pub top_logprobs: Option<u8>,
     #[serde(default)]
+    pub logprobs: Option<bool>, // Chat Completions compatibility
+    #[serde(default)]
+    pub n: Option<u32>, // Chat Completions: number of choices to generate
+    #[serde(default)]
+    pub max_completion_tokens: Option<u32>, // Chat Completions: newer max tokens field
+    #[serde(default)]
+    pub modalities: Option<Vec<String>>, // Chat Completions: output modalities
+    #[serde(default)]
+    pub prediction: Option<Value>, // Chat Completions: predicted output config
+    #[serde(default)]
+    pub reasoning_effort: Option<String>, // Chat Completions: reasoning effort level
+    #[serde(default)]
+    pub verbosity: Option<String>, // Chat Completions: response verbosity
+    #[serde(default)]
+    pub safety_identifier: Option<String>, // Chat Completions: safety tracking
+    #[serde(default)]
+    pub prompt_cache_key: Option<String>, // Chat Completions: cache optimization
+    #[serde(default)]
+    pub web_search_options: Option<Value>, // Chat Completions: web search config
+    #[serde(default)]
+    pub function_call: Option<Value>, // Chat Completions: deprecated, use tool_choice
+    #[serde(default)]
+    pub functions: Option<Vec<Value>>, // Chat Completions: deprecated, use tools
+    #[serde(default)]
     pub user: Option<String>,
-    #[serde(default)]
-    pub safety_identifier: Option<String>,
-    #[serde(default)]
-    pub prompt_cache_key: Option<String>,
     #[serde(default)]
     pub service_tier: Option<String>,
     #[serde(default)]

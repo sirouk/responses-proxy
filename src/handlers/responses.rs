@@ -189,7 +189,9 @@ pub async fn create_response(
         log::debug!("📥 [{}] Incoming request body: {}", request_id, preview);
     }
 
-    // Parse request
+    // Parse request - detect if it's Chat Completions or Responses format
+    let is_chat_completions_format = body.contains("\"messages\"") && !body.contains("\"input\"");
+    
     let req: ResponseRequest = match serde_json::from_str(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -201,6 +203,10 @@ pub async fn create_response(
             return Err((StatusCode::UNPROCESSABLE_ENTITY, "invalid_request_format"));
         }
     };
+    
+    if is_chat_completions_format {
+        log::info!("📨 Detected Chat Completions format request (using messages field)");
+    }
 
     if req.store.unwrap_or(false) {
         log::warn!("⚠️  'store' flag requested but persistence is not supported; ignoring");
@@ -297,9 +303,36 @@ pub async fn create_response(
         return Err((StatusCode::UNAUTHORIZED, "missing_api_key"));
     }
 
+    // Extract and normalize model name
+    let requested_model = req.model.clone().ok_or((StatusCode::BAD_REQUEST, "model_required"))?;
+    
+    // Normalize model name (use Arc to avoid string clones for error/metrics)
+    let backend_model: Arc<str> = Arc::from(normalize_model_name(&requested_model, &app).await);
+    let backend_model_for_error = Arc::clone(&backend_model);
+    let backend_model_for_metrics = Arc::clone(&backend_model);
+
+    // Check model capability for tool calling
+    let supports_native_tools = model_supports_feature(&backend_model, "tools", &app).await
+        || model_supports_feature(&backend_model, "function_calling", &app).await;
+
+    if req.tools.is_some() {
+        if !supports_native_tools {
+            log::warn!(
+                "⚠️ Model '{}' may not support native tool calling - XML tool instruction will be injected",
+                backend_model
+            );
+        } else {
+            log::debug!("✅ Model '{}' supports native tool calling", backend_model);
+        }
+    }
+
     // Convert Responses API request to Chat Completions format
-    let chat_req = match convert_to_chat_completions(&req) {
-        Ok(cr) => cr,
+    let chat_req = match convert_to_chat_completions(&req, supports_native_tools) {
+        Ok(mut cr) => {
+            // Ensure the normalized model name is used in the converted request
+            cr.model = backend_model.to_string();
+            cr
+        },
         Err(e) => {
             log::error!("❌ Request conversion failed: {}", e);
             return Err((StatusCode::BAD_REQUEST, "invalid_request"));
@@ -326,44 +359,26 @@ pub async fn create_response(
         log::info!("🔧 No tools being sent to backend");
     }
 
-    // Normalize model name (use Arc to avoid string clones for error/metrics)
-    let backend_model: Arc<str> = Arc::from(normalize_model_name(&chat_req.model, &app).await);
-    let backend_model_for_error = Arc::clone(&backend_model);
-    let backend_model_for_metrics = Arc::clone(&backend_model);
+    // Check for non-function tools that might not be supported
+    if let Some(ref tools) = req.tools {
+        let non_function_tools: Vec<String> = tools
+            .iter()
+            .filter_map(|tool| match tool {
+                crate::models::Tool::Nested { type_, .. } if type_ != "function" => {
+                    Some(type_.clone())
+                }
+                crate::models::Tool::Flat { type_, .. } if type_ != "function" => {
+                    Some(type_.clone())
+                }
+                _ => None,
+            })
+            .collect();
 
-    // Check model capability for tool calling
-    if chat_req.tools.is_some() {
-        let supports_tools = model_supports_feature(&backend_model, "tools", &app).await
-            || model_supports_feature(&backend_model, "function_calling", &app).await;
-
-        if !supports_tools {
+        if !non_function_tools.is_empty() {
+            log::warn!("⚠️ Request contains non-function tools: {} - these may not work with Chat Completions API backends like Chutes.ai", non_function_tools.join(", "));
             log::warn!(
-                "⚠️ Model '{}' may not support tool calling - check model capabilities",
-                backend_model
+                "💡 For reliable tool calling, use only 'function' type tools with this proxy"
             );
-        } else {
-            log::debug!("✅ Model '{}' supports tool calling", backend_model);
-
-            // Check for non-function tools that might not be supported
-            let non_function_tools: Vec<String> = chat_req
-                .tools
-                .as_ref()
-                .unwrap()
-                .iter()
-                .filter_map(|tool| match tool {
-                    crate::models::ChatTool::Function { type_, .. } if type_ != "function" => {
-                        Some(type_.clone())
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            if !non_function_tools.is_empty() {
-                log::warn!("⚠️ Request contains non-function tools: {} - these may not work with Chat Completions API backends like Chutes.ai", non_function_tools.join(", "));
-                log::warn!(
-                    "💡 For reliable tool calling, use only 'function' type tools with this proxy"
-                );
-            }
         }
     }
 
@@ -640,7 +655,6 @@ pub async fn create_response(
         let mut sse_parser = SseEventParser::new();
         let mut accumulated_text = String::new();
         let mut accumulated_reasoning = String::new();
-        let mut last_text_delta: Option<String> = None;
         let mut reasoning_started = false;
         let mut reasoning_item_id: Option<String> = None;
         let mut done = false;
@@ -815,7 +829,6 @@ pub async fn create_response(
                                     log::debug!(
                                         "🔍 Started XML buffering - detected <function= tag"
                                     );
-                                    last_text_delta = None;
                                 }
 
                                 // If buffering, check if we have the closing tag
@@ -905,6 +918,34 @@ pub async fn create_response(
                                                 )
                                                 .await;
 
+                                                // Send complete arguments as a single delta
+                                                let args_delta_event = StreamEvent {
+                                                    type_: "response.function_call_arguments.delta".to_string(),
+                                                    response: None,
+                                                    event_id: None,
+                                                    response_id: None,
+                                                    item_id: Some(item_id.clone()),
+                                                    output_index: Some(output_idx),
+                                                    content_index: None,
+                                                    delta: Some(xml_call.arguments.clone()),
+                                                    text: None,
+                                                    item: None,
+                                                    sequence_number: None,
+                                                    call_id: Some(call_id.clone()),
+                                                    name: None,
+                                                    arguments: None,
+                                                    error: None,
+                                                };
+
+                                                dispatch_event(
+                                                    &tx,
+                                                    &mut sequencer,
+                                                    &response_id,
+                                                    &request_id,
+                                                    args_delta_event,
+                                                )
+                                                .await;
+
                                                 let args_done_event = StreamEvent {
                                                     type_: "response.function_call_arguments.done"
                                                         .to_string(),
@@ -960,15 +1001,6 @@ pub async fn create_response(
 
                                 // Only emit text delta if we have actual text content AND we're not buffering XML
                                 if !content_text.is_empty() && !xml_buffering {
-                                    // Skip duplicate deltas that are identical to the last emitted chunk
-                                    if last_text_delta.as_deref() == Some(&content_text) {
-                                        log::debug!(
-                                            "🔁 Skipping duplicate text delta: {}",
-                                            content_text.trim()
-                                        );
-                                        continue;
-                                    }
-
                                     let delta_str = content_text.clone();
                                     let delta_event = StreamEvent {
                                         type_: "response.output_text.delta".to_string(),
@@ -996,8 +1028,6 @@ pub async fn create_response(
                                         delta_event,
                                     )
                                     .await;
-
-                                    last_text_delta = Some(delta_str);
                                 }
                             }
                         } else {
@@ -1275,8 +1305,6 @@ pub async fn create_response(
                 item_done_event,
             )
             .await;
-
-            last_text_delta.take();
         }
 
         // Collect and sort tool calls for processing
