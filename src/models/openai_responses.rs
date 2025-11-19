@@ -17,6 +17,13 @@ pub enum ResponseInputItem {
     Message {
         role: String,
         content: ResponseContent,
+        #[serde(default)]
+        tool_call_id: Option<String>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        metadata: Option<Value>,
+        #[serde(default)]
+        attachments: Option<Vec<MessageAttachment>>,
     },
     #[serde(rename = "reasoning")]
     Reasoning {
@@ -70,11 +77,24 @@ pub enum ContentPart {
         #[serde(default)]
         encrypted_content: Option<String>,
     },
+    #[serde(rename = "output")]
+    ToolOutput {
+        #[allow(dead_code)]
+        content_type: String,
+        body: String,
+    },
 }
 
 #[derive(Deserialize, Debug)]
 pub struct ImageUrl {
     pub url: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MessageAttachment {
+    pub file_id: String,
+    #[serde(default)]
+    pub tools: Vec<Value>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -333,7 +353,7 @@ pub struct ResponseRequest {
 
 // ---------- Response Models (OpenAI Responses API) ----------
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct Response {
     pub id: String,
     pub object: String, // "response"
@@ -443,7 +463,7 @@ pub enum OutputContent {
     Reasoning { text: String },
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -454,7 +474,7 @@ pub struct Usage {
     pub output_tokens_details: Option<TokenDetails>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct TokenDetails {
     pub cached_tokens: u32,
     pub reasoning_tokens: u32,

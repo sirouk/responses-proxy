@@ -98,20 +98,33 @@ When the model calls a function, you'll receive these events:
 }
 ```
 
-### 2. Arguments Delta (streaming)
+### 2. Tool Call Begin
 ```json
 {
-  "type": "response.function_call_arguments.delta",
+  "type": "response.output_tool_call.begin",
+  "item_id": "call_abc123",
+  "output_index": 1,
+  "call_id": "call_xyz",
+  "name": "get_weather"
+}
+```
+
+### 3. Arguments Delta (streaming)
+```json
+{
+  "type": "response.output_tool_call.delta",
   "item_id": "call_abc123",
   "output_index": 1,
   "delta": "{\"location\":"
 }
 ```
 
-### 3. Arguments Done
+> Legacy `response.function_call_arguments.delta` events are still emitted for compatibility, but `response.output_tool_call.delta` is now the canonical stream.
+
+### 4. Arguments Done
 ```json
 {
-  "type": "response.function_call_arguments.done",
+  "type": "response.output_tool_call.end",
   "item_id": "call_abc123",
   "output_index": 1,
   "name": "get_weather",
@@ -119,7 +132,9 @@ When the model calls a function, you'll receive these events:
 }
 ```
 
-### 4. Output Item Done
+> A matching `response.function_call_arguments.done` event is also emitted for older clients.
+
+### 5. Output Item Done
 ```json
 {
   "type": "response.output_item.done",
@@ -136,7 +151,7 @@ When the model calls a function, you'll receive these events:
 }
 ```
 
-### 5. Response Completed
+### 6. Response Completed
 ```json
 {
   "type": "response.completed",
@@ -253,8 +268,9 @@ The proxy translates between formats:
 - `function_call_output` input → `tool` role message
 
 **Chat Completions → Responses API:**
-- Delta `tool_calls` → `function_call_arguments.delta` events
-- Complete tool calls → `function_call` output items
+- Delta `tool_calls` → `output_tool_call.delta` (plus legacy `function_call_arguments.delta`)
+- Tool call starts → `output_tool_call.begin` + `output_item.added`
+- Tool call completion → `output_tool_call.end` + `function_call` output items
 - Maintains proper `output_index` ordering
 
 ### State Tracking
@@ -265,6 +281,10 @@ For each tool call, the proxy tracks:
 - `name` - Function name
 - `arguments` - Accumulated JSON arguments
 - `item_added` - Whether output_item.added was sent
+- `end_emitted` - Whether end events were sent (prevents duplicates)
+- `pending_args` - Arguments buffered before name arrives
+
+**Fragmentation Handling**: If the backend sends tool arguments before the function name (valid OpenAI behavior), the proxy buffers them in `pending_args` and replays them immediately after emitting the `begin` event. This ensures event ordering is always: `begin` → `delta` → `end`.
 
 ### Event Sequencing
 
@@ -273,13 +293,14 @@ Events are numbered sequentially:
 2. `response.output_item.added` (message)
 3. `response.content_part.added` (message text)
 4. Multiple `response.output_text.delta` (text chunks)
-5. `response.output_item.added` (function call)
-6. Multiple `response.function_call_arguments.delta` (args chunks)
-7. `response.function_call_arguments.done`
+5. `response.output_tool_call.begin` + `response.output_item.added` (function call)
+6. Multiple `response.output_tool_call.delta` *(legacy `response.function_call_arguments.delta` still emitted)*
+7. `response.output_tool_call.end` *(legacy `response.function_call_arguments.done` still emitted)*
 8. `response.output_item.done` (function call)
 9. `response.output_text.done`
 10. `response.output_item.done` (message)
 11. `response.completed`
+12. `response.done` (terminal event)
 
 ## Examples
 
@@ -322,6 +343,8 @@ RUST_LOG=debug cargo run
 
 Look for log messages:
 - `🔧 Tool call started: <name> (index <N>)`
+- `🔍 Buffering <N> argument bytes for tool index <I> (name not yet received)` - fragmentation detected
+- `🔧 Replaying <N> buffered argument bytes for <name>` - buffered args replayed
 - `🔧 Tool call complete: <name> - <bytes> bytes of args`
 - `🔧 INPUT: Found function_call (<name>) - will attach to assistant message`
 - `🔧 INPUT: Added function_call_output (call_id: <id>)`
@@ -339,23 +362,26 @@ Client Request (Responses API with tools)
          ↓
    Streaming Response Parser
          ↓
-   Tool Call State Tracker (HashMap)
+   Tool Call State Tracker (HashMap with buffering)
          ↓
    Event Generator:
-   - output_item.added (function_call)
-   - function_call_arguments.delta
-   - function_call_arguments.done
+   - output_tool_call.begin + output_item.added (function_call)
+   - output_tool_call.delta + function_call_arguments.delta
+   - output_tool_call.end + function_call_arguments.done
    - output_item.done (function_call)
          ↓
    SSE Stream to Client
 ```
 
+**Fragmentation Safety**: The state tracker buffers early argument chunks in `pending_args` until the function name arrives, then replays them in correct order.
+
 ## Performance
 
 - **Overhead:** 1-2ms for tool call event generation
-- **Memory:** ~200 bytes per tool call state
-- **Streaming:** No buffering, events sent as received
+- **Memory:** ~250 bytes per tool call state (includes pending_args buffer)
+- **Streaming:** Minimal buffering (only for fragmented tool headers)
 - **Parallel calls:** Handled efficiently with HashMap tracking
+- **Fragmentation:** Buffering overhead negligible (<1μs per chunk)
 
 ## Error Handling
 

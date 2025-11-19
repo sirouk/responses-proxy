@@ -163,11 +163,15 @@ CADDY_TLS=true
 | | `response.output_text.done` | ✅ Full | |
 | | `response.reasoning_text.delta` | ✅ Full | For reasoning models |
 | | `response.reasoning_text.done` | ✅ Full | For reasoning models |
-| | `response.function_call_arguments.delta` | ✅ Full | |
-| | `response.function_call_arguments.done` | ✅ Full | |
+| | `response.output_tool_call.begin` | ✅ Full | Function-call start |
+| | `response.output_tool_call.delta` | ✅ Full | Streaming arguments |
+| | `response.output_tool_call.end` | ✅ Full | Final arguments |
+| | `response.function_call_arguments.delta` | ✅ Legacy | Emitted for compatibility |
+| | `response.function_call_arguments.done` | ✅ Legacy | Emitted for compatibility |
 | | `response.content_part.done` | ✅ Full | |
 | | `response.output_item.done` | ✅ Full | |
 | | `response.completed` | ✅ Full | |
+| | `response.done` | ✅ Full | Always terminates stream |
 | | `response.failed` | ✅ Full | |
 
 ### Limitations (Chat Completions Backend)
@@ -268,12 +272,15 @@ Streaming responses follow the OpenAI Responses API event format:
 - `response.content_part.done` - Content part done
 - `response.output_item.done` - Output item done
 - `response.completed` - Response complete
+- `response.done` - Stream fully flushed
 
 **Tool calling events:**
 - `response.output_item.added` - Function call item added (type: "function_call")
-- `response.function_call_arguments.delta` - Function arguments streaming
-- `response.function_call_arguments.done` - Function arguments complete
+- `response.output_tool_call.begin` - Tool call initiated
+- `response.output_tool_call.delta` - Function arguments streaming
+- `response.output_tool_call.end` - Function arguments complete
 - `response.output_item.done` - Function call item complete
+- Legacy `response.function_call_arguments.*` events are also emitted for compatibility
 
 Example streaming response:
 
@@ -289,6 +296,8 @@ data: {"type":"response.output_text.delta","item_id":"msg_...","output_index":0,
 data: {"type":"response.output_text.done","item_id":"msg_...","output_index":0,"content_index":0,"text":"Hello there!","sequence_number":6}
 
 data: {"type":"response.completed","response":{"id":"resp_...","status":"completed",...},"sequence_number":9}
+
+data: {"type":"response.done","response":{"id":"resp_...","status":"completed",...},"sequence_number":10}
 ```
 
 **Tool calling response example:**
@@ -298,16 +307,22 @@ When the model makes a tool call, you'll receive these events:
 ```
 data: {"type":"response.output_item.added","item_id":"call_123","output_index":1,"item":{"id":"call_123","type":"function_call","status":"in_progress","call_id":"call_abc","name":"get_weather","arguments":""},"sequence_number":5}
 
-data: {"type":"response.function_call_arguments.delta","item_id":"call_123","output_index":1,"delta":"{\"location\":","sequence_number":6}
+data: {"type":"response.output_tool_call.begin","item_id":"call_123","output_index":1,"call_id":"call_abc","name":"get_weather","sequence_number":6}
 
-data: {"type":"response.function_call_arguments.delta","item_id":"call_123","output_index":1,"delta":"\"San Francisco, CA\"}","sequence_number":7}
+data: {"type":"response.output_tool_call.delta","item_id":"call_123","output_index":1,"delta":"{\"location\":","sequence_number":7}
 
-data: {"type":"response.function_call_arguments.done","item_id":"call_123","output_index":1,"name":"get_weather","arguments":"{\"location\":\"San Francisco, CA\"}","sequence_number":8}
+data: {"type":"response.output_tool_call.delta","item_id":"call_123","output_index":1,"delta":"\"San Francisco, CA\"}","sequence_number":8}
+
+data: {"type":"response.output_tool_call.end","item_id":"call_123","output_index":1,"name":"get_weather","arguments":"{\"location\":\"San Francisco, CA\"}","sequence_number":9}
 
 data: {"type":"response.output_item.done","item_id":"call_123","output_index":1,"item":{"id":"call_123","type":"function_call","status":"completed","call_id":"call_abc","name":"get_weather","arguments":"{\"location\":\"San Francisco, CA\"}"},"sequence_number":9}
 
 data: {"type":"response.completed","response":{"id":"resp_...","output":[{"type":"message",...},{"type":"function_call","call_id":"call_abc","name":"get_weather","arguments":"..."}]},"sequence_number":10}
+
+data: {"type":"response.done","response":{"id":"resp_...","status":"completed",...},"sequence_number":11}
 ```
+
+Legacy `response.function_call_arguments.*` events still appear for backwards compatibility, so older clients continue to work unchanged.
 
 The final `response.completed` event includes all output items:
 - Message item (index 0) with any text the model produced

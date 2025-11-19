@@ -94,19 +94,35 @@ def stream_response_with_tools() -> None:
                 if delta:
                     print(f"💬 Text: {delta}", end="", flush=True)
 
-            elif event_type == "response.function_call_arguments.delta":
+            elif event_type in (
+                "response.output_tool_call.begin",
+                "response.function_call_arguments.done",
+            ):
+                item_id = event.get("item_id")
+                if item_id not in tool_calls:
+                    tool_calls[item_id] = {"arguments": ""}
+                name = event.get("name")
+                if name:
+                    tool_calls[item_id]["name"] = name
+                if event_type == "response.function_call_arguments.done":
+                    tool_calls[item_id]["arguments"] = event.get("arguments", "")
+
+            elif event_type in (
+                "response.output_tool_call.delta",
+                "response.function_call_arguments.delta",
+            ):
                 item_id = event.get("item_id")
                 delta = event.get("delta", "")
                 if item_id not in tool_calls:
                     tool_calls[item_id] = {"arguments": ""}
                 tool_calls[item_id]["arguments"] += delta
 
-            elif event_type == "response.function_call_arguments.done":
+            elif event_type == "response.output_tool_call.end":
                 item_id = event.get("item_id")
                 if item_id not in tool_calls:
                     tool_calls[item_id] = {}
                 tool_calls[item_id]["name"] = event.get("name")
-                tool_calls[item_id]["arguments"] = event.get("arguments")
+                tool_calls[item_id]["arguments"] = event.get("arguments", "")
 
             elif event_type == "response.output_item.done":
                 item = event.get("item", {})

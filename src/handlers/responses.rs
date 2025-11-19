@@ -41,7 +41,9 @@ struct ToolCallState {
     type_: String,
     name: Option<String>,
     arguments: String,
-    item_added: bool, // Whether we've sent the output_item.added event
+    item_added: bool,     // Whether we've sent the output_item.added event
+    end_emitted: bool,    // Whether we've emitted output_tool_call.end/legacy done events
+    pending_args: String, // Arguments buffered before name arrives
 }
 
 /// Helper to assign monotonic event and sequence identifiers
@@ -96,6 +98,153 @@ async fn dispatch_event(
             log::error!("❌ Failed to serialize stream event {}: {err}", event_type);
         }
     }
+}
+
+async fn emit_tool_call_begin_events(
+    tx: &tokio::sync::mpsc::Sender<Event>,
+    sequencer: &mut EventSequencer,
+    response_id: &str,
+    request_id: &str,
+    item_id: &str,
+    call_id: &str,
+    function_name: &str,
+    output_index: u32,
+) {
+    let begin_event = StreamEvent {
+        type_: "response.output_tool_call.begin".to_string(),
+        response: None,
+        event_id: None,
+        response_id: None,
+        item_id: Some(item_id.to_string()),
+        output_index: Some(output_index),
+        content_index: None,
+        delta: None,
+        text: None,
+        item: None,
+        sequence_number: None,
+        call_id: Some(call_id.to_string()),
+        name: Some(function_name.to_string()),
+        arguments: None,
+        error: None,
+    };
+
+    dispatch_event(tx, sequencer, response_id, request_id, begin_event).await;
+
+    let legacy_event = StreamEvent {
+        type_: "response.output_item.added".to_string(),
+        response: None,
+        event_id: None,
+        response_id: None,
+        item_id: Some(item_id.to_string()),
+        output_index: Some(output_index),
+        content_index: None,
+        delta: None,
+        text: None,
+        item: Some(OutputItem {
+            id: item_id.to_string(),
+            object: REALTIME_ITEM_OBJECT.to_string(),
+            type_: "function_call".to_string(),
+            status: "in_progress".to_string(),
+            role: None,
+            content: None,
+            call_id: Some(call_id.to_string()),
+            name: Some(function_name.to_string()),
+            arguments: Some(String::new()),
+            output: None,
+        }),
+        sequence_number: None,
+        call_id: Some(call_id.to_string()),
+        name: None,
+        arguments: None,
+        error: None,
+    };
+
+    dispatch_event(tx, sequencer, response_id, request_id, legacy_event).await;
+}
+
+async fn emit_tool_call_delta_events(
+    tx: &tokio::sync::mpsc::Sender<Event>,
+    sequencer: &mut EventSequencer,
+    response_id: &str,
+    request_id: &str,
+    item_id: &str,
+    call_id: &str,
+    output_index: u32,
+    delta: &str,
+) {
+    let delta_string = delta.to_string();
+
+    let modern_event = StreamEvent {
+        type_: "response.output_tool_call.delta".to_string(),
+        response: None,
+        event_id: None,
+        response_id: None,
+        item_id: Some(item_id.to_string()),
+        output_index: Some(output_index),
+        content_index: None,
+        delta: Some(delta_string.clone()),
+        text: None,
+        item: None,
+        sequence_number: None,
+        call_id: Some(call_id.to_string()),
+        name: None,
+        arguments: None,
+        error: None,
+    };
+
+    dispatch_event(tx, sequencer, response_id, request_id, modern_event).await;
+
+    let legacy_event = StreamEvent {
+        type_: "response.function_call_arguments.delta".to_string(),
+        response: None,
+        event_id: None,
+        response_id: None,
+        item_id: Some(item_id.to_string()),
+        output_index: Some(output_index),
+        content_index: None,
+        delta: Some(delta_string),
+        text: None,
+        item: None,
+        sequence_number: None,
+        call_id: Some(call_id.to_string()),
+        name: None,
+        arguments: None,
+        error: None,
+    };
+
+    dispatch_event(tx, sequencer, response_id, request_id, legacy_event).await;
+}
+
+async fn emit_tool_call_end_event(
+    tx: &tokio::sync::mpsc::Sender<Event>,
+    sequencer: &mut EventSequencer,
+    response_id: &str,
+    request_id: &str,
+    item_id: &str,
+    call_id: &str,
+    output_index: u32,
+    function_name: &str,
+    arguments: &str,
+) {
+    let end_event = StreamEvent {
+        type_: "response.output_tool_call.end".to_string(),
+        response: None,
+        event_id: None,
+        response_id: None,
+        item_id: Some(item_id.to_string()),
+        output_index: Some(output_index),
+        content_index: None,
+        delta: None,
+        text: None,
+        item: None,
+        sequence_number: None,
+        call_id: Some(call_id.to_string()),
+        name: Some(function_name.to_string()),
+        arguments: Some(arguments.to_string()),
+        error: None,
+    };
+
+    dispatch_event(tx, sequencer, response_id, request_id, end_event).await;
 }
 
 /// Record a circuit breaker failure asynchronously
@@ -191,7 +340,7 @@ pub async fn create_response(
 
     // Parse request - detect if it's Chat Completions or Responses format
     let is_chat_completions_format = body.contains("\"messages\"") && !body.contains("\"input\"");
-    
+
     let req: ResponseRequest = match serde_json::from_str(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -203,7 +352,7 @@ pub async fn create_response(
             return Err((StatusCode::UNPROCESSABLE_ENTITY, "invalid_request_format"));
         }
     };
-    
+
     if is_chat_completions_format {
         log::info!("📨 Detected Chat Completions format request (using messages field)");
     }
@@ -304,8 +453,11 @@ pub async fn create_response(
     }
 
     // Extract and normalize model name
-    let requested_model = req.model.clone().ok_or((StatusCode::BAD_REQUEST, "model_required"))?;
-    
+    let requested_model = req
+        .model
+        .clone()
+        .ok_or((StatusCode::BAD_REQUEST, "model_required"))?;
+
     // Normalize model name (use Arc to avoid string clones for error/metrics)
     let backend_model: Arc<str> = Arc::from(normalize_model_name(&requested_model, &app).await);
     let backend_model_for_error = Arc::clone(&backend_model);
@@ -332,7 +484,7 @@ pub async fn create_response(
             // Ensure the normalized model name is used in the converted request
             cr.model = backend_model.to_string();
             cr
-        },
+        }
         Err(e) => {
             log::error!("❌ Request conversion failed: {}", e);
             return Err((StatusCode::BAD_REQUEST, "invalid_request"));
@@ -874,75 +1026,47 @@ pub async fn create_response(
                                                     name: Some(xml_call.name.clone()),
                                                     arguments: xml_call.arguments.clone(),
                                                     item_added: true,
+                                                    end_emitted: false,
+                                                    pending_args: String::new(),
                                                 };
 
                                                 tool_calls.insert(call_idx, call_state.clone());
 
-                                                // Emit function call added event
                                                 let output_idx = (call_idx + 1) as u32;
-                                                let added_event = StreamEvent {
-                                                    type_: "response.output_item.added".to_string(),
-                                                    response: None,
-                                                    event_id: None,
-                                                    response_id: None,
-                                                    item_id: Some(item_id.clone()),
-                                                    output_index: Some(output_idx),
-                                                    content_index: None,
-                                                    delta: None,
-                                                    text: None,
-                                                    item: Some(OutputItem {
-                                                        id: item_id.clone(),
-                                                        object: REALTIME_ITEM_OBJECT.to_string(),
-                                                        type_: "function_call".to_string(),
-                                                        status: "in_progress".to_string(),
-                                                        role: None,
-                                                        content: None,
-                                                        call_id: Some(call_id.clone()),
-                                                        name: Some(xml_call.name.clone()),
-                                                        arguments: None,
-                                                        output: None,
-                                                    }),
-                                                    sequence_number: None,
-                                                    call_id: Some(call_id.clone()),
-                                                    name: Some(xml_call.name.clone()),
-                                                    arguments: None,
-                                                    error: None,
-                                                };
-
-                                                dispatch_event(
+                                                emit_tool_call_begin_events(
                                                     &tx,
                                                     &mut sequencer,
                                                     &response_id,
                                                     &request_id,
-                                                    added_event,
+                                                    &item_id,
+                                                    &call_id,
+                                                    &xml_call.name,
+                                                    output_idx,
                                                 )
                                                 .await;
 
-                                                // Send complete arguments as a single delta
-                                                let args_delta_event = StreamEvent {
-                                                    type_: "response.function_call_arguments.delta".to_string(),
-                                                    response: None,
-                                                    event_id: None,
-                                                    response_id: None,
-                                                    item_id: Some(item_id.clone()),
-                                                    output_index: Some(output_idx),
-                                                    content_index: None,
-                                                    delta: Some(xml_call.arguments.clone()),
-                                                    text: None,
-                                                    item: None,
-                                                    sequence_number: None,
-                                                    call_id: Some(call_id.clone()),
-                                                    name: None,
-                                                    arguments: None,
-                                                    error: None,
-                                                };
-
-                                                dispatch_event(
+                                                emit_tool_call_delta_events(
                                                     &tx,
                                                     &mut sequencer,
                                                     &response_id,
                                                     &request_id,
-                                                    args_delta_event,
+                                                    &item_id,
+                                                    &call_id,
+                                                    output_idx,
+                                                    &xml_call.arguments,
+                                                )
+                                                .await;
+
+                                                emit_tool_call_end_event(
+                                                    &tx,
+                                                    &mut sequencer,
+                                                    &response_id,
+                                                    &request_id,
+                                                    &item_id,
+                                                    &call_id,
+                                                    output_idx,
+                                                    &xml_call.name,
+                                                    &xml_call.arguments,
                                                 )
                                                 .await;
 
@@ -973,6 +1097,48 @@ pub async fn create_response(
                                                     args_done_event,
                                                 )
                                                 .await;
+
+                                                let call_done_event = StreamEvent {
+                                                    type_: "response.output_item.done".to_string(),
+                                                    response: None,
+                                                    event_id: None,
+                                                    response_id: None,
+                                                    item_id: Some(item_id.clone()),
+                                                    output_index: Some(output_idx),
+                                                    content_index: None,
+                                                    delta: None,
+                                                    text: None,
+                                                    item: Some(OutputItem {
+                                                        id: item_id.clone(),
+                                                        object: REALTIME_ITEM_OBJECT.to_string(),
+                                                        type_: "function_call".to_string(),
+                                                        status: "completed".to_string(),
+                                                        role: None,
+                                                        content: None,
+                                                        call_id: Some(call_id.clone()),
+                                                        name: Some(xml_call.name.clone()),
+                                                        arguments: Some(xml_call.arguments.clone()),
+                                                        output: None,
+                                                    }),
+                                                    sequence_number: None,
+                                                    call_id: Some(call_id.clone()),
+                                                    name: None,
+                                                    arguments: None,
+                                                    error: None,
+                                                };
+
+                                                dispatch_event(
+                                                    &tx,
+                                                    &mut sequencer,
+                                                    &response_id,
+                                                    &request_id,
+                                                    call_done_event,
+                                                )
+                                                .await;
+
+                                                if let Some(entry) = tool_calls.get_mut(&call_idx) {
+                                                    entry.end_emitted = true;
+                                                }
 
                                                 log::info!(
                                                     "🔧 Converted XML tool: {}",
@@ -1051,6 +1217,8 @@ pub async fn create_response(
                                     name: None,
                                     arguments: String::new(),
                                     item_added: false,
+                                    end_emitted: false,
+                                    pending_args: String::new(),
                                 }
                             });
 
@@ -1085,79 +1253,73 @@ pub async fn create_response(
                                             tc.index
                                         );
 
-                                        let item_added_event = StreamEvent {
-                                            type_: "response.output_item.added".to_string(),
-                                            response: None,
-                                            event_id: None,
-                                            response_id: None,
-                                            item_id: Some(call_state.item_id.clone()),
-                                            output_index: Some(output_idx),
-                                            content_index: None,
-                                            delta: None,
-                                            text: None,
-                                            item: Some(OutputItem {
-                                                id: call_state.item_id.clone(),
-                                                object: REALTIME_ITEM_OBJECT.to_string(),
-                                                type_: "function_call".to_string(),
-                                                status: "in_progress".to_string(),
-                                                role: None,
-                                                content: None,
-                                                call_id: Some(call_state.call_id.clone()),
-                                                name: call_state.name.clone(),
-                                                arguments: Some(String::new()),
-                                                output: None,
-                                            }),
-                                            sequence_number: None,
-                                            call_id: Some(call_state.call_id.clone()),
-                                            name: None,
-                                            arguments: None,
-                                            error: None,
-                                        };
-
-                                        dispatch_event(
+                                        emit_tool_call_begin_events(
                                             &tx,
                                             &mut sequencer,
                                             &response_id,
                                             &request_id,
-                                            item_added_event,
+                                            &call_state.item_id,
+                                            &call_state.call_id,
+                                            function_name,
+                                            output_idx,
                                         )
                                         .await;
+
+                                        // If we buffered arguments before the name arrived, replay them now
+                                        if !call_state.pending_args.is_empty() {
+                                            log::info!(
+                                                "🔧 Replaying {} buffered argument bytes for {}",
+                                                call_state.pending_args.len(),
+                                                function_name
+                                            );
+
+                                            emit_tool_call_delta_events(
+                                                &tx,
+                                                &mut sequencer,
+                                                &response_id,
+                                                &request_id,
+                                                &call_state.item_id,
+                                                &call_state.call_id,
+                                                output_idx,
+                                                &call_state.pending_args,
+                                            )
+                                            .await;
+
+                                            // Move pending to arguments
+                                            call_state.arguments.push_str(&call_state.pending_args);
+                                            call_state.pending_args.clear();
+                                        }
                                     }
                                 }
 
                                 // Update arguments if provided
                                 if let Some(ref args) = func.arguments {
-                                    call_state.arguments.push_str(args);
+                                    if call_state.item_added {
+                                        // Name already sent, emit delta immediately
+                                        call_state.arguments.push_str(args);
 
-                                    // Send function_call_arguments.delta
-                                    let output_idx = tc.index as u32 + 1;
+                                        let output_idx = tc.index as u32 + 1;
 
-                                    let args_delta_event = StreamEvent {
-                                        type_: "response.function_call_arguments.delta".to_string(),
-                                        response: None,
-                                        event_id: None,
-                                        response_id: None,
-                                        item_id: Some(call_state.item_id.clone()),
-                                        output_index: Some(output_idx),
-                                        content_index: None,
-                                        delta: Some(args.clone()),
-                                        text: None,
-                                        item: None,
-                                        sequence_number: None,
-                                        call_id: Some(call_state.call_id.clone()),
-                                        name: None,
-                                        arguments: None,
-                                        error: None,
-                                    };
-
-                                    dispatch_event(
-                                        &tx,
-                                        &mut sequencer,
-                                        &response_id,
-                                        &request_id,
-                                        args_delta_event,
-                                    )
-                                    .await;
+                                        emit_tool_call_delta_events(
+                                            &tx,
+                                            &mut sequencer,
+                                            &response_id,
+                                            &request_id,
+                                            &call_state.item_id,
+                                            &call_state.call_id,
+                                            output_idx,
+                                            args,
+                                        )
+                                        .await;
+                                    } else {
+                                        // Name not yet received, buffer the arguments
+                                        call_state.pending_args.push_str(args);
+                                        log::debug!(
+                                            "🔍 Buffering {} argument bytes for tool index {} (name not yet received)",
+                                            args.len(),
+                                            tc.index
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1323,6 +1485,23 @@ pub async fn create_response(
                 .clone()
                 .unwrap_or_else(|| "function_call".to_string());
 
+            if call_state.end_emitted {
+                continue;
+            }
+
+            emit_tool_call_end_event(
+                &tx,
+                &mut sequencer,
+                &response_id,
+                &request_id,
+                &call_state.item_id,
+                &call_state.call_id,
+                output_idx,
+                &function_name,
+                &call_state.arguments,
+            )
+            .await;
+
             // Send function_call_arguments.done
             let args_done_event = StreamEvent {
                 type_: "response.function_call_arguments.done".to_string(),
@@ -1397,7 +1576,7 @@ pub async fn create_response(
             .await;
         }
 
-        // Send response.completed event
+        // Send response.completed/done events
         let mut final_reasoning_state = req_reasoning_state.clone();
         if final_reasoning_state.is_none() && reasoning_started {
             final_reasoning_state = Some(ResponseReasoningState::default());
@@ -1469,56 +1648,58 @@ pub async fn create_response(
             None
         };
 
+        let final_response = Response {
+            id: response_id.clone(),
+            object: "response".to_string(),
+            created_at,
+            status: final_status.to_string(),
+            error: None,
+            incomplete_details,
+            model: Some(model_for_response.to_string()),
+            output: output_items,
+            usage: Some(Usage {
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                total_tokens: total_input_tokens + total_output_tokens,
+                input_tokens_details: Some(TokenDetails {
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                }),
+                output_tokens_details: Some(TokenDetails {
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                }),
+            }),
+            metadata: req_metadata.clone(),
+            // Echo back request parameters
+            instructions: req_instructions.clone(),
+            tools: req_tools.clone(),
+            tool_choice: req_tool_choice.clone(),
+            parallel_tool_calls: req_parallel_tool_calls,
+            temperature: req_temperature,
+            top_p: req_top_p,
+            max_output_tokens: req_max_output_tokens,
+            store: req_store,
+            previous_response_id: req_previous_response_id.clone(),
+            reasoning: final_reasoning_state.clone(),
+            background: req_background,
+            max_tool_calls: req_max_tool_calls,
+            text: req_text.clone(),
+            prompt: req_prompt.clone(),
+            truncation: req_truncation.clone(),
+            conversation: req_conversation.clone(),
+            top_logprobs: req_top_logprobs,
+            user: req_user.clone(),
+            safety_identifier: req_safety_identifier.clone(),
+            prompt_cache_key: req_prompt_cache_key.clone(),
+            service_tier: req_service_tier.clone(),
+        };
+
         let completed_event = StreamEvent {
             type_: "response.completed".to_string(),
             event_id: None,
             response_id: None,
-            response: Some(Response {
-                id: response_id.clone(),
-                object: "response".to_string(),
-                created_at,
-                status: final_status.to_string(),
-                error: None,
-                incomplete_details,
-                model: Some(model_for_response.to_string()),
-                output: output_items,
-                usage: Some(Usage {
-                    input_tokens: total_input_tokens,
-                    output_tokens: total_output_tokens,
-                    total_tokens: total_input_tokens + total_output_tokens,
-                    input_tokens_details: Some(TokenDetails {
-                        cached_tokens: 0,
-                        reasoning_tokens: 0,
-                    }),
-                    output_tokens_details: Some(TokenDetails {
-                        cached_tokens: 0,
-                        reasoning_tokens: 0,
-                    }),
-                }),
-                metadata: req_metadata.clone(),
-                // Echo back request parameters
-                instructions: req_instructions.clone(),
-                tools: req_tools.clone(),
-                tool_choice: req_tool_choice.clone(),
-                parallel_tool_calls: req_parallel_tool_calls,
-                temperature: req_temperature,
-                top_p: req_top_p,
-                max_output_tokens: req_max_output_tokens,
-                store: req_store,
-                previous_response_id: req_previous_response_id.clone(),
-                reasoning: final_reasoning_state.clone(),
-                background: req_background,
-                max_tool_calls: req_max_tool_calls,
-                text: req_text.clone(),
-                prompt: req_prompt.clone(),
-                truncation: req_truncation.clone(),
-                conversation: req_conversation.clone(),
-                top_logprobs: req_top_logprobs,
-                user: req_user.clone(),
-                safety_identifier: req_safety_identifier.clone(),
-                prompt_cache_key: req_prompt_cache_key.clone(),
-                service_tier: req_service_tier.clone(),
-            }),
+            response: Some(final_response.clone()),
             item_id: None,
             output_index: None,
             content_index: None,
@@ -1540,6 +1721,26 @@ pub async fn create_response(
             completed_event,
         )
         .await;
+
+        let done_event = StreamEvent {
+            type_: "response.done".to_string(),
+            event_id: None,
+            response_id: None,
+            response: Some(final_response),
+            item_id: None,
+            output_index: None,
+            content_index: None,
+            delta: None,
+            text: None,
+            item: None,
+            sequence_number: None,
+            call_id: None,
+            name: None,
+            arguments: None,
+            error: None,
+        };
+
+        dispatch_event(&tx, &mut sequencer, &response_id, &request_id, done_event).await;
 
         log::debug!("🏁 Streaming task completed");
 
@@ -1577,7 +1778,12 @@ fn estimate_input_size(input: &crate::models::ResponseInput) -> usize {
         ResponseInput::Array(items) => items
             .iter()
             .map(|item| match item {
-                ResponseInputItem::Message { content, role } => {
+                ResponseInputItem::Message {
+                    content,
+                    role,
+                    attachments,
+                    ..
+                } => {
                     let content_size = match content {
                         ResponseContent::String(s) => s.len(),
                         ResponseContent::Array(parts) => parts
@@ -1585,6 +1791,7 @@ fn estimate_input_size(input: &crate::models::ResponseInput) -> usize {
                             .map(|p| match p {
                                 ContentPart::InputText { text }
                                 | ContentPart::OutputText { text } => text.len(),
+                                ContentPart::ToolOutput { body, .. } => body.len(),
                                 ContentPart::InputImage { image_url } => image_url.url.len(),
                                 ContentPart::InputFile {
                                     file_id,
@@ -1607,7 +1814,21 @@ fn estimate_input_size(input: &crate::models::ResponseInput) -> usize {
                             })
                             .sum(),
                     };
-                    role.len() + content_size
+
+                    let attachments_size = attachments
+                        .as_ref()
+                        .map(|list| {
+                            list.iter()
+                                .map(|att| {
+                                    let tools_len: usize =
+                                        att.tools.iter().map(|tool| tool.to_string().len()).sum();
+                                    att.file_id.len() + tools_len
+                                })
+                                .sum()
+                        })
+                        .unwrap_or(0);
+
+                    role.len() + content_size + attachments_size
                 }
                 ResponseInputItem::Reasoning {
                     text,

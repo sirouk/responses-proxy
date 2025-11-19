@@ -4,10 +4,12 @@ Production-grade Rust service translating the OpenAI Responses API into a Chat C
 
 ## Highlights
 
-- **Full Responses API surface**: text, multimodal inputs, streamed outputs, tool calling.
-- **Stateless transformer**: forwards client auth, keeps no session state, easy to scale.
-- **Safe defaults**: request validation, circuit breaker guard, bounded logging.
-- **Observability hooks**: structured logging, optional on-disk dumps, metrics-friendly event stream.
+- **100% Responses API compatibility**: Complete support for text, multimodal inputs, streamed outputs, and MCP-compliant tool calling with modern `output_tool_call.*` events.
+- **Stateless transformer**: Forwards client auth, keeps no session state, easy to scale horizontally.
+- **Fragmentation-safe streaming**: Buffers early tool arguments until headers complete, preventing event ordering violations.
+- **Dual event emission**: Modern (`output_tool_call.*`) + legacy (`function_call_arguments.*`) events for seamless client migration.
+- **Safe defaults**: Request validation, circuit breaker guard, bounded logging, attachment rejection.
+- **Observability hooks**: Structured logging, optional on-disk dumps, metrics-friendly event stream.
 
 ## Lightning Quick Start
 
@@ -102,12 +104,14 @@ Logging dumps are gated behind `ENABLE_LOG_VOLUME`; with the flag disabled the p
 
 Key behaviours:
 
-- **Request validation**: size limits on inputs, instructions, and tool counts.
-- **Tool support**: forwards `function` tools, injects missing file utilities for external providers, and converts stray XML-style tool call text into native function events.
-- **Reasoning models**: captures `reasoning_content`, emits `<think>`-compatible events, and surfaces reasoning output items alongside final content.
-- **Responses parity**: accepts modern Responses parameters like `include`, `stream_options`, `text.format`, `top_logprobs`, and `user`, forwarding structured-output formats and logprob hints to the backend while warning (or rejecting) unsupported knobs such as `background`, `prompt` templates, and `service_tier`.
-- **File inputs**: rejects `input_file` content parts with a clear error because the Chat Completions backend cannot dereference OpenAI file IDs; clients must inline file contents before sending.
-- **No persistence**: the optional `store` flag is accepted but ignored; a warning is logged when provided.
+- **Request validation**: Size limits on inputs, instructions, and tool counts; attachments validated and rejected with file IDs logged.
+- **Tool support**: Forwards `function` tools, converts stray XML-style tool calls into native function events with full delta streaming, and emits both modern (`output_tool_call.*`) and legacy (`function_call_arguments.*`) events for client compatibility.
+- **MCP tool results**: Accepts `role:"tool"` messages with `content:[{type:"output", content_type, body}]` per MCP spec, plus legacy `function_call_output` blocks for backward compat.
+- **Reasoning models**: Captures `reasoning_content`, emits `<think>`-compatible events, and surfaces reasoning output items alongside final content.
+- **Responses parity**: Accepts modern Responses parameters like `include`, `stream_options`, `text.format`, `top_logprobs`, and `user`, forwarding structured-output formats and logprob hints to the backend while warning (or rejecting) unsupported knobs such as `background`, `prompt` templates, and `service_tier`.
+- **File inputs**: Rejects `input_file` content parts with a clear error because the Chat Completions backend cannot dereference OpenAI file IDs; clients must inline file contents before sending.
+- **No persistence**: The optional `store` flag is accepted but ignored; a warning is logged when provided.
+- **Fragmentation safety**: Buffers tool arguments arriving before function names to ensure correct event ordering.
 
 ## Operational Notes
 

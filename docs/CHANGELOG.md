@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.4] - 2025-11-19
+## [0.1.5] - 2025-11-19
 
 ### Added
 - **100% Chat Completions API Compatibility**: The proxy now fully supports EVERY parameter in the OpenAI Chat Completions API specification at the `/v1/responses` endpoint:
@@ -23,9 +23,13 @@
   - **Native Tooling**: Enforces standard JSON tool calling for models that support it.
   - **XML Fallback**: Injects XML tool calling instructions (`<function=name>`) for legacy/Codex models that lack native function calling support.
 - **XML Tool Delta Events**: Added `function_call_arguments.delta` emission for converted XML tool calls. This ensures clients expecting argument deltas (standard in the Response API) receive them, correcting previous behavior where only the final result was sent.
+- **Responses Streaming Parity**: Emitted events now include the modern `response.output_tool_call.begin|delta|end` trio plus the terminal `response.done` event, while retaining the legacy `response.function_call_arguments.*` signals for backwards compatibility.
+- **MCP Tool Continuations**: `role:"tool"` messages with MCP-style `content:[{type:"output", content_type, body}]` are accepted and converted into Chat Completions tool messages; attachments are validated and rejected early with clear errors.
+- **Fragmented Tool Call Buffering**: Added `pending_args` buffer to `ToolCallState` to handle backends that send tool arguments before the function name arrives (valid OpenAI streaming behavior), preventing premature delta emission that would violate event ordering constraints.
 
 ### Fixed
 - **Streaming Fidelity**: Removed aggressive de-duplication logic that incorrectly dropped valid repeating text deltas (e.g., ensuring "good" doesn't become "god" if split across chunks).
+- **Tool Call Event Ordering**: Fixed critical edge case where argument deltas could be emitted before `output_tool_call.begin` if the backend fragmented tool headers across chunks; the proxy now buffers early arguments and replays them after the begin event is sent.
 
 ## [0.1.2] - 2025-11-18
 

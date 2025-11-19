@@ -61,7 +61,10 @@ Do not use JSON tool calls. Use the XML format above.";
     // Passthrough messages if provided (hybrid Chat Completions compatibility)
     // This allows advanced users to send pre-formatted messages while using the Responses endpoint
     if let Some(req_messages) = &req.messages {
-        log::debug!("📨 Processing {} pre-formatted messages (hybrid mode)", req_messages.len());
+        log::debug!(
+            "📨 Processing {} pre-formatted messages (hybrid mode)",
+            req_messages.len()
+        );
         for msg in req_messages {
             if let Ok(chat_msg) = serde_json::from_value::<ChatMessage>(msg.clone()) {
                 messages.push(chat_msg);
@@ -86,7 +89,43 @@ Do not use JSON tool calls. Use the XML format above.";
 
                 for item in items {
                     match item {
-                        ResponseInputItem::Message { role, content } => {
+                        ResponseInputItem::Message {
+                            role,
+                            content,
+                            tool_call_id,
+                            attachments,
+                            ..
+                        } => {
+                            if let Some(attached) = attachments {
+                                if !attached.is_empty() {
+                                    let file_ids: Vec<_> =
+                                        attached.iter().map(|a| a.file_id.as_str()).collect();
+                                    log::error!(
+                                        "❌ Attachments are not supported in stateless mode (files: {:?})",
+                                        file_ids
+                                    );
+                                    return Err("attachments_not_supported".to_string());
+                                }
+                            }
+
+                            if role == "tool" {
+                                let call_id = tool_call_id.clone().ok_or_else(|| {
+                                    log::error!("❌ Tool role message missing tool_call_id");
+                                    "tool_message_missing_tool_call_id".to_string()
+                                })?;
+
+                                let tool_payload = extract_tool_message_body(content)?;
+
+                                messages.push(ChatMessage {
+                                    role: "tool".to_string(),
+                                    content: Some(json!(tool_payload)),
+                                    tool_calls: None,
+                                    tool_call_id: Some(call_id),
+                                });
+
+                                continue;
+                            }
+
                             let (mut msg_content, content_reasoning) =
                                 convert_response_content(content)?;
 
@@ -306,7 +345,10 @@ Do not use JSON tool calls. Use the XML format above.";
         service_tier: req.service_tier.clone(),
         store: req.store,
         n: req.n,
-        stream_options: req.stream_options.as_ref().map(|so| serde_json::to_value(so).unwrap_or(json!({}))),
+        stream_options: req
+            .stream_options
+            .as_ref()
+            .map(|so| serde_json::to_value(so).unwrap_or(json!({}))),
         max_completion_tokens: req.max_completion_tokens,
         modalities: req.modalities.clone(),
         prediction: req.prediction.clone(),
@@ -335,6 +377,12 @@ fn convert_response_content(content: &ResponseContent) -> Result<(Value, Option<
                         converted.push(json!({
                             "type": "text",
                             "text": text
+                        }));
+                    }
+                    ContentPart::ToolOutput { body, .. } => {
+                        converted.push(json!({
+                            "type": "text",
+                            "text": body
                         }));
                     }
                     ContentPart::InputImage { image_url } => {
@@ -375,6 +423,7 @@ fn convert_response_content(content: &ResponseContent) -> Result<(Value, Option<
                         ContentPart::InputText { text } | ContentPart::OutputText { text } => {
                             Some(text.as_str())
                         }
+                        ContentPart::ToolOutput { body, .. } => Some(body.as_str()),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -396,6 +445,46 @@ fn convert_response_content(content: &ResponseContent) -> Result<(Value, Option<
                         None
                     },
                 ))
+            }
+        }
+    }
+}
+
+/// Extract tool role content into a plain string suitable for Chat Completions
+fn extract_tool_message_body(content: &ResponseContent) -> Result<String, String> {
+    match content {
+        ResponseContent::String(text) => Ok(text.clone()),
+        ResponseContent::Array(parts) => {
+            let mut combined = String::new();
+
+            for part in parts {
+                match part {
+                    ContentPart::InputText { text } | ContentPart::OutputText { text } => {
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str(text);
+                    }
+                    ContentPart::ToolOutput { body, .. } => {
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str(body);
+                    }
+                    other => {
+                        log::error!(
+                            "❌ Tool message content part not supported in proxy: {:?}",
+                            other
+                        );
+                        return Err("tool_output_content_not_supported".to_string());
+                    }
+                }
+            }
+
+            if combined.is_empty() {
+                Err("tool_output_empty".to_string())
+            } else {
+                Ok(combined)
             }
         }
     }

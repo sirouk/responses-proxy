@@ -45,8 +45,13 @@ RESPONSE=$(curl -s -N "${PROXY_URL}/v1/responses" \
     "stream": true
   }')
 
-FUNCTION_NAME=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.function_call_arguments.done") | .name' | head -1)
-FUNCTION_ARGS=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.function_call_arguments.done") | .arguments' | head -1)
+FUNCTION_NAME=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.output_tool_call.end") | .name // empty' | head -1)
+FUNCTION_ARGS=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.output_tool_call.end") | .arguments // empty' | head -1)
+
+if [[ -z "$FUNCTION_NAME" ]]; then
+  FUNCTION_NAME=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.function_call_arguments.done") | .name // empty' | head -1)
+  FUNCTION_ARGS=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.function_call_arguments.done") | .arguments // empty' | head -1)
+fi
 CALL_ID=$(echo "$RESPONSE" | grep '^data:' | sed 's/^data: //' | jq -r 'select(.type=="response.output_item.done") | .item.call_id' | head -1)
 
 if [[ -z "$FUNCTION_NAME" || -z "$CALL_ID" ]]; then

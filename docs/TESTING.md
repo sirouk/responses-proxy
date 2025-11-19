@@ -86,6 +86,7 @@ curl -N http://localhost:8282/v1/responses \
 
 ### Successful Response Events
 
+**Text-only response**:
 1. `response.created` - Initial response
 2. `response.output_item.added` - Message item added
 3. `response.content_part.added` - Content part started
@@ -94,6 +95,13 @@ curl -N http://localhost:8282/v1/responses \
 6. `response.content_part.done` - Content complete
 7. `response.output_item.done` - Item complete
 8. `response.completed` - Response complete
+9. `response.done` - Terminal event
+
+**With tool calls** (adds):
+- `response.output_tool_call.begin` - Tool call started
+- `response.output_tool_call.delta` - Argument chunks
+- `response.output_tool_call.end` - Arguments complete
+- Legacy events also emitted for compatibility
 
 ### Error Response
 
@@ -112,27 +120,49 @@ curl -N http://localhost:8282/v1/responses \
 
 ## Integration Tests
 
-### Python Client
+### Core Tests
 
 ```bash
-cd examples
-./python_client.py
+# Basic functionality
+./tests/manual/simple_request.sh
+
+# Multi-turn conversations
+./tests/manual/multi_turn.sh
+
+# Reasoning models
+./tests/manual/reasoning_model.sh
 ```
 
-### Node.js Client
+### Tool Calling Tests
 
 ```bash
-cd examples
-./nodejs_client.js
+# Basic tool calling with modern events
+python tests/manual/tool_calling_simple.py
+
+# Multi-turn tool calling with continuation
+./tests/manual/tool_calling_example.sh
+
+# MCP-style tool result submission
+python tests/mcp_tool_roundtrip_test.py
+
+# Fragmentation edge case validation
+./tests/fragmented_tool_call_test.sh
+
+# Comprehensive 7-step flow
+./tests/comprehensive_flow_test.sh
 ```
 
-### Shell Scripts
+### Test Suites
 
 ```bash
-cd examples
-./simple_request.sh
-./multi_turn.sh
-./with_tools.sh
+# All tool calling scenarios
+./tests/test_tool_calling.sh
+
+# Reasoning backend tests
+./tests/test_reasoning_backend.sh
+
+# Full proxy test suite
+./tests/test_proxy.sh
 ```
 
 ## Load Testing
@@ -199,6 +229,7 @@ response.output_text.done
 response.content_part.done
 response.output_item.done
 response.completed
+response.done
 ```
 
 ### Verify Headers
