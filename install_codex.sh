@@ -279,7 +279,7 @@ prompt_yes_no() {
 prompt_responses_base_url() {
     local default_value="$1"
     local input=""
-    read -r -p "Responses proxy base URL [${default_value}]: " input
+    read -r -p "Responses proxy base URL [${default_value}] (press Enter to use default): " input
     if [ -z "$input" ]; then
         printf '%s\n' "$default_value"
     else
