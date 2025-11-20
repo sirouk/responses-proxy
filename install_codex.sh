@@ -288,7 +288,7 @@ prompt_responses_base_url() {
 }
 
 select_model() {
-    local _api_key="$1"
+    local api_key="$1"
     local default_model="$DEFAULT_MODEL"
 
     if ! command -v curl >/dev/null 2>&1; then
@@ -297,8 +297,8 @@ select_model() {
         return
     fi
 
-    if ! command -v python3 >/dev/null 2>&1; then
-        log_warn "python3 not available; defaulting to ${default_model}" >&2
+    if ! command -v node >/dev/null 2>&1; then
+        log_warn "node not available; defaulting to ${default_model}" >&2
         printf '%s\n' "$default_model"
         return
     fi
@@ -319,73 +319,53 @@ select_model() {
     fi
 
     local models_output=""
-    if ! models_output=$(printf '%s' "$response" | python3 - <<'PY'
-import json
-import sys
+    if ! models_output=$(printf '%s' "$response" | node --eval '
+        const fs = require("fs");
+        try {
+            const payload = JSON.parse(fs.readFileSync(0, "utf-8"));
+            const models = Array.isArray(payload?.data) ? payload.data : [];
+            const entries = models
+                .map((model) => {
+                    const id = model?.id;
+                    if (typeof id !== "string" || !id.trim()) {
+                        return null;
+                    }
 
+                    const inputPrice = model?.price?.input?.usd ?? model?.pricing?.prompt ?? 0;
+                    const outputPrice = model?.price?.output?.usd ?? model?.pricing?.completion ?? 0;
+                    const features = Array.isArray(model?.supported_features)
+                        ? model.supported_features
+                        : Array.isArray(model?.capabilities)
+                            ? model.capabilities
+                            : [];
 
-def to_float(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+                    const thinkTag = features.some((feature) =>
+                        typeof feature === "string" && feature.toLowerCase() === "thinking"
+                    ) ? "[TH]" : "    ";
 
+                    let priceTag = "n/a";
+                    if (Number(inputPrice) > 0 || Number(outputPrice) > 0) {
+                        const inPrice = Number(inputPrice || 0).toFixed(2);
+                        const outPrice = Number(outputPrice || 0).toFixed(2);
+                        priceTag = `$${inPrice}/$${outPrice}`;
+                    }
 
-try:
-    payload = json.load(sys.stdin)
-except json.JSONDecodeError:
-    sys.exit(1)
+                    return { id, priceTag, thinkTag };
+                })
+                .filter(Boolean)
+                .sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: "base" }));
 
-models = payload.get("data")
-if not isinstance(models, list):
-    sys.exit(1)
+            if (!entries.length) {
+                process.exit(1);
+            }
 
-rows = []
-for idx, model in enumerate(models, 1):
-    model_id = model.get("id")
-    if not isinstance(model_id, str) or not model_id.strip():
-        continue
-
-    price = model.get("price") or {}
-    pricing = model.get("pricing") or {}
-    in_price = None
-    out_price = None
-
-    if isinstance(price, dict):
-        input_price = price.get("input")
-        if isinstance(input_price, dict):
-            in_price = to_float(input_price.get("usd"))
-        output_price = price.get("output")
-        if isinstance(output_price, dict):
-            out_price = to_float(output_price.get("usd"))
-
-    if in_price is None and isinstance(pricing, dict):
-        in_price = to_float(pricing.get("prompt"))
-    if out_price is None and isinstance(pricing, dict):
-        out_price = to_float(pricing.get("completion"))
-
-    features = model.get("supported_features") or model.get("capabilities") or []
-    think = False
-    if isinstance(features, list):
-        think = any(isinstance(feat, str) and feat.lower() == "thinking" for feat in features)
-    elif isinstance(features, dict):
-        think = any(isinstance(name, str) and name.lower() == "thinking" and bool(val) for name, val in features.items())
-
-    if in_price is None and out_price is None:
-        price_tag = "n/a"
-    else:
-        in_str = f"{in_price:.2f}" if in_price is not None else "0.00"
-        out_str = f"{out_price:.2f}" if out_price is not None else "0.00"
-        price_tag = f"${in_str}/${out_str}"
-
-    rows.append(f"{idx}|{model_id}|{price_tag}|{'*' if think else ' '}")
-
-if not rows:
-    sys.exit(1)
-
-sys.stdout.write("\n".join(rows))
-PY
-    ); then
+            entries.forEach((entry, idx) => {
+                console.log(`${idx + 1}|${entry.id}|${entry.priceTag}|${entry.thinkTag}`);
+            });
+        } catch (_err) {
+            process.exit(1);
+        }
+    ' 2>/dev/null); then
         models_output=""
     fi
 
@@ -393,6 +373,10 @@ PY
         log_warn "No models returned; defaulting to ${default_model}" >&2
         printf '%s\n' "$default_model"
         return
+    fi
+
+    if [ -n "${CLAUDE_MODEL_LIST_FILE:-}" ]; then
+        printf "%s\n" "$models_output" >"${CLAUDE_MODEL_LIST_FILE}"
     fi
 
     local model_rows=()
@@ -410,7 +394,7 @@ PY
     local default_selection=1
     local entry
     for entry in "${model_rows[@]}"; do
-        IFS='|' read -r num mid _rest <<<"$entry"
+        IFS='|' read -r num mid _price _think <<<"$entry"
         if [ "$mid" = "$default_model" ]; then
             default_selection="$num"
             break
@@ -418,15 +402,35 @@ PY
     done
 
     printf '\n' >&2
-    log_info "Available models (per 1M tokens input/output):" >&2
+    log_info "Available models (per 1M tokens: input/output):" >&2
     printf '\n' >&2
 
-    for entry in "${model_rows[@]}"; do
-        IFS='|' read -r num mid price think <<<"$entry"
-        printf "  %2s) %s %-50s %s\n" "$num" "$think" "$mid" "$price" >&2
+    local half=$(((total + 1) / 2))
+    for ((i = 0; i < half; i++)); do
+        local left="${model_rows[$i]}"
+        local right_index=$((i + half))
+        local right=""
+
+        if [ "$right_index" -lt "$total" ]; then
+            right="${model_rows[$right_index]}"
+        fi
+
+        IFS='|' read -r num1 id1 price1 think1 <<<"$left"
+        printf "  %2s) %s %-45s %-16s" "$num1" "$think1" "$id1" "$price1" >&2
+
+        if [ -n "$right" ]; then
+            IFS='|' read -r num2 id2 price2 think2 <<<"$right"
+            printf " %2s) %s %-45s %-16s" "$num2" "$think2" "$id2" "$price2" >&2
+        fi
+        printf '\n' >&2
     done
 
     printf '\n' >&2
+
+    if [ "${CLAUDE_NONINTERACTIVE:-0}" = "1" ]; then
+        printf '%s\n' "$(printf '%s\n' "$models_output" | sed -n '1p' | cut -d'|' -f2)"
+        return
+    fi
 
     while true; do
         local selection=""
