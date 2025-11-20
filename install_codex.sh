@@ -288,7 +288,7 @@ prompt_responses_base_url() {
 }
 
 select_model() {
-    local api_key="$1"
+    local _api_key="$1"
     local default_model="$DEFAULT_MODEL"
 
     if ! command -v curl >/dev/null 2>&1; then
@@ -304,28 +304,12 @@ select_model() {
     fi
 
     local response=""
-    local fetched_with_auth=0
 
-    if [ -n "$api_key" ]; then
-        log_info "Fetching available models from ${MODELS_API_BASE_URL} (with auth header)..." >&2
-        if response=$(curl -fsS -H "Authorization: Bearer $api_key" "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
-            if [ -n "$response" ]; then
-                fetched_with_auth=1
-            else
-                log_warn "Models response empty when using API key; retrying without auth..." >&2
-            fi
-        else
-            log_warn "Model fetch with API key failed; retrying without auth..." >&2
-        fi
-    fi
-
-    if [ "$fetched_with_auth" -ne 1 ]; then
-        log_info "Fetching available models from ${MODELS_API_BASE_URL} (unauthenticated)..." >&2
-        if ! response=$(curl -fsS "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
-            log_warn "Unable to retrieve models; defaulting to ${default_model}" >&2
-            printf '%s\n' "$default_model"
-            return
-        fi
+    log_info "Fetching available models from ${MODELS_API_BASE_URL} (unauthenticated)..." >&2
+    if ! response=$(curl -fsS "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
+        log_warn "Unable to retrieve models; defaulting to ${default_model}" >&2
+        printf '%s\n' "$default_model"
+        return
     fi
 
     if [ -z "$response" ]; then
