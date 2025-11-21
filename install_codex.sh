@@ -26,6 +26,7 @@ ARCH_UNAME="$(uname -m)"
 PLATFORM_OS=""
 CODEX_BINARY_DEST_DEFAULT="/usr/local/bin/codex"
 DETECTED_ASSET_NAME=""
+KEY_STORED_ON_DISK=0
 
 log_info() {
     echo "[INFO] $*"
@@ -792,6 +793,7 @@ collect_api_key() {
 
 store_api_key() {
     local key="$1"
+    KEY_STORED_ON_DISK=0
     if prompt_yes_no "Store API key in ${ENV_FILE} for easy sourcing?" "Y"; then
         ensure_dir_exists "$CONFIG_DIR"
         cat <<EOF >"$ENV_FILE"
@@ -801,6 +803,7 @@ EOF
         chmod 600 "$ENV_FILE" >/dev/null 2>&1 || true
         log_success "Saved API key to $ENV_FILE (chmod 600)"
         ensure_env_autoload
+        KEY_STORED_ON_DISK=1
     else
         log_warn "Skipped storing API key on disk."
         log_info "Export the key manually before using Codex: export ${ENV_VAR_NAME}=<your key>"
@@ -828,8 +831,11 @@ main() {
     echo
     log_success "Codex environment prepared."
     echo "Next steps:"
-    echo "  - If you stored your key, run: source $ENV_FILE"
-    echo "  - Otherwise, export ${ENV_VAR_NAME} manually as shown above."
+    if [ "$KEY_STORED_ON_DISK" -eq 1 ]; then
+        echo "  - Run: source $ENV_FILE"
+    else
+        echo "  - Export ${ENV_VAR_NAME} before launching (e.g. export ${ENV_VAR_NAME}=cpk_xxx)"
+    fi
     echo "  - Launch Codex: codex"
 }
 
