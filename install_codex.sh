@@ -92,6 +92,52 @@ determine_platform_defaults() {
 
 determine_platform_defaults
 
+normalize_windows_path() {
+    local raw_path="$1"
+    if [ -z "$raw_path" ]; then
+        return
+    fi
+
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$raw_path"
+        return
+    fi
+
+    local path="${raw_path//\\//}"
+    if [[ "$path" =~ ^([A-Za-z]):(.*)$ ]]; then
+        local drive="${BASH_REMATCH[1]}"
+        local rest="${BASH_REMATCH[2]}"
+        drive=$(printf '%s' "$drive" | tr '[:upper:]' '[:lower:]')
+        printf '/%s%s\n' "$drive" "$rest"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
+adjust_paths_for_platform() {
+    if [ "$PLATFORM_OS" != "windows" ]; then
+        return
+    fi
+
+    local win_home="${USERPROFILE:-}"
+    if [ -z "$win_home" ]; then
+        return
+    fi
+
+    local posix_home
+    posix_home=$(normalize_windows_path "$win_home")
+    if [ -z "$posix_home" ]; then
+        return
+    fi
+
+    CONFIG_DIR="${posix_home}/.codex"
+    CONFIG_FILE="${CONFIG_DIR}/config.toml"
+    ENV_FILE="${CONFIG_DIR}/env"
+    CODEX_BINARY_DEST_DEFAULT="${CONFIG_DIR}/bin/codex.exe"
+}
+
+adjust_paths_for_platform
+
 version_lt() {
     local IFS=.
     local i
@@ -378,6 +424,11 @@ remove_existing_codex() {
 }
 
 ensure_env_autoload() {
+    if [ "$PLATFORM_OS" = "windows" ]; then
+        log_warn "Automatic shell profile updates not supported on Windows; add 'source $ENV_FILE' to your preferred shell manually."
+        return
+    fi
+
     local hook_line="source \"$ENV_FILE\""
     local shell_name
     shell_name=$(basename "${SHELL:-}")
