@@ -19,7 +19,7 @@ Bootstrap the Chutes.ai Codex fork, config, and credential helper in one command
 curl -fsSL https://raw.githubusercontent.com/chutesai/responses-proxy/refs/heads/main/install_codex.sh | bash
 ```
 
-The script installs Rust if needed, builds the forked Codex CLI, offers to replace any existing `codex`, and writes the recommended `config.toml` plus API-key helper.
+The script downloads the latest Codex release for your OS, offers to replace any existing `codex`, and writes the recommended `config.toml` plus API-key helper. On Linux it auto-detects your libc (glibc vs. musl) and falls back to the musl build if the host ships an older glibc.
 
 For deeper background, see the companion docs in `docs/` (e.g. `docs/PROJECT_SUMMARY.md`).
 

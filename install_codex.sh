@@ -13,11 +13,19 @@ API_KEY_URL="https://chutes.ai/app/api"
 DEFAULT_BASE_URL="https://responses.chutes.ai/v1"
 MODELS_API_BASE_URL="https://llm.chutes.ai"
 DEFAULT_MODEL="Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
-RUSTUP_INSTALL_SCRIPT="https://sh.rustup.rs"
-CODEX_GIT_URL="https://github.com/chutesai/codex.git"
-CODEX_FORK_DIR="${HOME}/codex-fork"
-CODEX_RS_DIR="${CODEX_FORK_DIR}/codex-rs"
-CODEX_BINARY_DEST="/usr/local/bin/codex"
+CODEX_REPO_SLUG="chutesai/codex"
+GITHUB_API="https://api.github.com"
+USER_DEFINED_LINUX_FLAVOR=0
+if [ -n "${CODEX_LINUX_TARGET_FLAVOR+x}" ]; then
+    USER_DEFINED_LINUX_FLAVOR=1
+fi
+LINUX_TARGET_FLAVOR="${CODEX_LINUX_TARGET_FLAVOR:-gnu}"
+CODEX_RELEASE_TAG="${CODEX_RELEASE_TAG:-nightly}"
+OS_UNAME="$(uname -s)"
+ARCH_UNAME="$(uname -m)"
+PLATFORM_OS=""
+CODEX_BINARY_DEST_DEFAULT="/usr/local/bin/codex"
+DETECTED_ASSET_NAME=""
 
 log_info() {
     echo "[INFO] $*"
@@ -59,74 +67,278 @@ backup_file() {
     fi
 }
 
-load_rust_env() {
-    if [ -s "${HOME}/.cargo/env" ]; then
-        # shellcheck disable=SC1091
-        . "${HOME}/.cargo/env"
-    fi
+determine_platform_defaults() {
+    case "$OS_UNAME" in
+        Darwin)
+            PLATFORM_OS="macos"
+            CODEX_BINARY_DEST_DEFAULT="/usr/local/bin/codex"
+            ;;
+        Linux)
+            PLATFORM_OS="linux"
+            CODEX_BINARY_DEST_DEFAULT="/usr/local/bin/codex"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            PLATFORM_OS="windows"
+            CODEX_BINARY_DEST_DEFAULT="${HOME}/.codex/bin/codex.exe"
+            ;;
+        *)
+            PLATFORM_OS="unknown"
+            CODEX_BINARY_DEST_DEFAULT="/usr/local/bin/codex"
+            log_warn "Unrecognized operating system '${OS_UNAME}'. Attempting install with default settings."
+            ;;
+    esac
 }
 
-ensure_rust() {
-    load_rust_env
-    if command -v cargo >/dev/null 2>&1; then
-        local version
-        version=$(cargo --version 2>/dev/null || echo "unknown")
-        log_success "Rust toolchain already available (${version})"
+determine_platform_defaults
+
+version_lt() {
+    local IFS=.
+    local i
+    local -a ver1=($1) ver2=($2)
+    local len=${#ver1[@]}
+    if [ ${#ver2[@]} -gt "$len" ]; then
+        len=${#ver2[@]}
+    fi
+    for ((i = 0; i < len; i++)); do
+        local a=${ver1[i]:-0}
+        local b=${ver2[i]:-0}
+        if ((10#$a < 10#$b)); then
+            return 0
+        elif ((10#$a > 10#$b)); then
+            return 1
+        fi
+    done
+    return 1
+}
+
+detect_glibc_version() {
+    if ! command -v ldd >/dev/null 2>&1; then
         return
     fi
 
-    require_command curl
-    log_info "Installing Rust toolchain via rustup..."
-    if curl --proto '=https' --tlsv1.2 -sSf "$RUSTUP_INSTALL_SCRIPT" | sh -s -- -y >/dev/null; then
-        log_success "Rustup installation complete"
-    else
-        log_error "Rust installation failed"
+    local output
+    if ! output=$(ldd --version 2>&1 | head -n1); then
+        return
     fi
 
-    load_rust_env
+    if echo "$output" | grep -qi "musl"; then
+        printf '%s\n' "musl"
+        return
+    fi
 
-    if ! command -v cargo >/dev/null 2>&1; then
-        log_error "Cargo not found after rustup installation"
+    if [[ "$output" =~ ([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
     fi
 }
 
-clone_or_update_codex_repo() {
-    require_command git
+auto_select_linux_flavor() {
+    if [ "$PLATFORM_OS" != "linux" ] || [ "$USER_DEFINED_LINUX_FLAVOR" -eq 1 ]; then
+        return
+    fi
 
-    if [ ! -d "$CODEX_FORK_DIR/.git" ]; then
-        log_info "Cloning Codex fork from $CODEX_GIT_URL into $CODEX_FORK_DIR..."
-        git clone "$CODEX_GIT_URL" "$CODEX_FORK_DIR" >/dev/null 2>&1 || log_error "Failed to clone Codex fork"
+    local detected
+    detected=$(detect_glibc_version || true)
+    if [ -z "$detected" ]; then
+        log_warn "Unable to detect libc version; defaulting to ${LINUX_TARGET_FLAVOR}"
+        return
+    fi
+
+    if [ "$detected" = "musl" ]; then
+        LINUX_TARGET_FLAVOR="musl"
+        log_info "Detected musl libc via ldd; using musl Codex binary."
+        return
+    fi
+
+    if version_lt "$detected" "2.39"; then
+        LINUX_TARGET_FLAVOR="musl"
+        log_info "Detected glibc ${detected} (<2.39); using musl Codex binary."
     else
-        log_info "Updating existing Codex fork in $CODEX_FORK_DIR..."
-        if ! git -C "$CODEX_FORK_DIR" remote get-url origin >/dev/null 2>&1; then
-            log_warn "Codex fork appears to have no origin remote; skipping update"
+        log_info "Detected glibc ${detected}; using GNU Codex binary."
+    fi
+}
+
+auto_select_linux_flavor
+
+if [ -z "${CODEX_BINARY_DEST:-}" ]; then
+    CODEX_BINARY_DEST="$CODEX_BINARY_DEST_DEFAULT"
+fi
+
+if [ "$PLATFORM_OS" = "windows" ] && [[ "$CODEX_BINARY_DEST" != *.exe ]]; then
+    CODEX_BINARY_DEST="${CODEX_BINARY_DEST}.exe"
+fi
+
+github_api_request() {
+    local path="$1"
+    log_info "Querying: ${GITHUB_API}${path}"
+    local args=(--max-time 30 --silent --show-error --location --fail)
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
+    args+=(-H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+
+    local response=""
+    if ! response=$(curl "${args[@]}" "${GITHUB_API}${path}"); then
+        log_error "GitHub API request failed (path: ${path}). Check connectivity or set http_proxy/https_proxy if needed."
+    fi
+
+    local trimmed="${response//[[:space:]]/}"
+    if [ -z "$trimmed" ]; then
+        log_error "GitHub API returned an empty response for ${path}. The '${CODEX_RELEASE_TAG}' release may not exist yet."
+    fi
+
+    printf '%s' "$response"
+}
+
+download_file() {
+    local url="$1"
+    local dest="$2"
+    local curl_args=(--fail --location --show-error -o "$dest")
+    if [ -t 1 ]; then
+        curl_args+=(--progress-bar)
+        printf '\n'
+    else
+        curl_args+=(--silent)
+    fi
+
+    if ! curl "${curl_args[@]}" "$url"; then
+        log_error "Failed to download ${url}"
+    fi
+
+    if [ -t 1 ]; then
+        printf '\n'
+    fi
+}
+
+detect_asset_target() {
+    case "$PLATFORM_OS" in
+        macos)
+            case "$ARCH_UNAME" in
+                arm64) DETECTED_ASSET_NAME="codex-macos-aarch64" ;;
+                x86_64) DETECTED_ASSET_NAME="codex-macos-x86_64" ;;
+                *) log_error "Unsupported macOS architecture: ${ARCH_UNAME}" ;;
+            esac
+            ;;
+        linux)
+            case "$ARCH_UNAME" in
+                x86_64)
+                    if [ "$LINUX_TARGET_FLAVOR" = "musl" ]; then
+                        DETECTED_ASSET_NAME="codex-linux-x86_64-musl"
+                    else
+                        DETECTED_ASSET_NAME="codex-linux-x86_64-gnu"
+                    fi
+                    ;;
+                aarch64|arm64)
+                    if [ "$LINUX_TARGET_FLAVOR" = "musl" ]; then
+                        DETECTED_ASSET_NAME="codex-linux-aarch64-musl"
+                    else
+                        DETECTED_ASSET_NAME="codex-linux-aarch64-gnu"
+                    fi
+                    ;;
+                *) log_error "Unsupported Linux architecture: ${ARCH_UNAME}" ;;
+            esac
+            ;;
+        windows)
+            case "$ARCH_UNAME" in
+                x86_64|amd64) DETECTED_ASSET_NAME="codex-windows-x86_64.exe" ;;
+                arm64|aarch64) DETECTED_ASSET_NAME="codex-windows-arm64.exe" ;;
+                *) log_error "Unsupported Windows architecture: ${ARCH_UNAME}" ;;
+            esac
+            ;;
+        *)
+            log_error "Unsupported operating system: ${OS_UNAME}. Supported OS: macOS, Linux, or Windows."
+            ;;
+    esac
+
+    log_info "Detected platform ${OS_UNAME}/${ARCH_UNAME}; targeting asset '${DETECTED_ASSET_NAME}'"
+}
+
+fetch_release_asset_url() {
+    local asset_name="$1"
+    local tag="${CODEX_RELEASE_TAG:-nightly}"
+    local path
+
+    if [ "$tag" = "latest" ]; then
+        path="/repos/${CODEX_REPO_SLUG}/releases/latest"
+    else
+        path="/repos/${CODEX_REPO_SLUG}/releases/tags/${tag}"
+    fi
+
+    local response
+    if ! response=$(github_api_request "$path"); then
+        log_warn "Could not fetch release info for tag: ${tag}"
+        return 1
+    fi
+
+    local download_url
+    download_url=$(echo "$response" | grep -oE "https://[^ \"]+/${asset_name}" | head -n 1)
+
+    if [ -z "$download_url" ]; then
+        log_error "Release asset '${asset_name}' not found in release '${tag}' metadata."
+        return 1
+    fi
+
+    printf '%s' "$download_url"
+    return 0
+}
+
+install_codex_binary() {
+    local source_binary="$1"
+    local dest="$CODEX_BINARY_DEST"
+    local dest_dir
+    dest_dir=$(dirname "$dest")
+
+    if [ ! -d "$dest_dir" ]; then
+        log_info "Creating ${dest_dir}"
+        if mkdir -p "$dest_dir" >/dev/null 2>&1; then
+            :
+        elif command -v sudo >/dev/null 2>&1 && sudo mkdir -p "$dest_dir" >/dev/null 2>&1; then
+            :
         else
-            git -C "$CODEX_FORK_DIR" fetch --all --tags >/dev/null 2>&1 || log_warn "Failed to fetch updates for Codex fork"
-            git -C "$CODEX_FORK_DIR" pull --ff-only >/dev/null 2>&1 || log_warn "Failed to fast-forward Codex fork"
+            log_error "Unable to create destination directory ${dest_dir}"
         fi
     fi
 
-    git -C "$CODEX_FORK_DIR" submodule update --init --recursive >/dev/null 2>&1 || log_warn "Failed to update Codex submodules"
+    if install -m 0755 "$source_binary" "$dest" >/dev/null 2>&1; then
+        :
+    elif command -v sudo >/dev/null 2>&1 && sudo install -m 0755 "$source_binary" "$dest" >/dev/null 2>&1; then
+        :
+    elif cp "$source_binary" "$dest" >/dev/null 2>&1; then
+        chmod +x "$dest" >/dev/null 2>&1 || true
+    elif command -v sudo >/dev/null 2>&1 && sudo cp "$source_binary" "$dest" >/dev/null 2>&1; then
+        sudo chmod +x "$dest" >/dev/null 2>&1 || true
+    else
+        log_error "Failed to install Codex binary to ${dest}"
+    fi
+
+    log_success "Codex CLI installed at ${dest}"
 }
 
-build_codex_binary() {
-    load_rust_env
+download_and_install_codex_from_release() {
+    require_command curl
 
-    if [ ! -d "$CODEX_RS_DIR" ]; then
-        log_error "Codex Rust workspace not found at $CODEX_RS_DIR"
+    detect_asset_target
+    log_info "Fetching release metadata from GitHub API..."
+    local asset_url
+    asset_url=$(fetch_release_asset_url "$DETECTED_ASSET_NAME")
+    if [ -z "$asset_url" ]; then
+        log_error "Could not find release asset '${DETECTED_ASSET_NAME}' on tag ${CODEX_RELEASE_TAG}."
     fi
 
-    log_info "Building Codex CLI (release)..."
-    if cargo --quiet --version >/dev/null 2>&1; then
-        :
-    else
-        log_error "Cargo command unavailable"
-    fi
+    log_info "Downloading '${DETECTED_ASSET_NAME}' from release '${CODEX_RELEASE_TAG}'..."
+    log_info "Source: ${asset_url}"
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local asset_path="${tmpdir}/codex-download"
+    download_file "$asset_url" "$asset_path"
+    log_info "Download complete."
 
-    if (cd "$CODEX_RS_DIR" && cargo build --release --bin codex >/dev/null 2>&1); then
-        log_success "Codex CLI built successfully"
-    else
-        log_error "Failed to build Codex CLI"
+    remove_existing_codex
+    install_codex_binary "$asset_path"
+
+    rm -rf "$tmpdir"
+
+    if command -v codex >/dev/null 2>&1; then
+        codex --version || log_warn "Installed Codex but failed to read version."
     fi
 }
 
@@ -139,7 +351,7 @@ confirm_codex_replacement() {
     existing_path=$(command -v codex)
     log_info "Detected existing Codex binary at $existing_path"
 
-    if prompt_yes_no "Replace existing Codex binary with Chutes.ai fork build?" "Y"; then
+    if prompt_yes_no "Replace existing Codex binary with the latest Chutes.ai release build?" "Y"; then
         return 0
     fi
 
@@ -157,7 +369,7 @@ remove_existing_codex() {
             log_success "Removed existing Codex at $existing_path"
         elif command -v sudo >/dev/null 2>&1 && sudo rm -f "$existing_path" >/dev/null 2>&1; then
             log_success "Removed existing Codex (sudo) at $existing_path"
-    else
+        else
             log_warn "Unable to remove existing Codex binary at $existing_path"
         fi
     fi
@@ -222,39 +434,12 @@ ensure_env_autoload() {
     fi
 }
 
-link_codex_binary() {
-    local binary_path="${CODEX_RS_DIR}/target/release/codex"
-
-    if [ ! -x "$binary_path" ]; then
-        log_error "Expected Codex binary missing at $binary_path"
-    fi
-
-    require_command sudo
-    log_info "Linking Codex binary to $CODEX_BINARY_DEST..."
-    if sudo ln -sf "$binary_path" "$CODEX_BINARY_DEST" >/dev/null 2>&1; then
-        log_success "Codex CLI available at $CODEX_BINARY_DEST"
-    else
-        log_error "Failed to create symlink for Codex CLI"
-    fi
-
-    if command -v codex >/dev/null 2>&1; then
-        log_info "codex located at $(command -v codex)"
-        codex --version || log_warn "Unable to determine Codex version"
-    else
-        log_warn "Codex CLI not found in PATH after linking"
-    fi
-}
-
 install_codex_cli() {
     if ! confirm_codex_replacement; then
         return
     fi
 
-    ensure_rust
-    clone_or_update_codex_repo
-    build_codex_binary
-    remove_existing_codex
-    link_codex_binary
+    download_and_install_codex_from_release
 }
 
 prompt_yes_no() {
@@ -291,14 +476,24 @@ select_model() {
     local api_key="$1"
     local default_model="$DEFAULT_MODEL"
 
-    if ! command -v curl >/dev/null 2>&1; then
-        log_warn "curl not available; defaulting to ${default_model}" >&2
+    local fetch_tool=""
+    if command -v curl >/dev/null 2>&1; then
+        fetch_tool="curl"
+    elif command -v wget >/dev/null 2>&1; then
+        fetch_tool="wget"
+    else
+        log_warn "Neither curl nor wget available; defaulting to ${default_model}" >&2
         printf '%s\n' "$default_model"
         return
     fi
 
-    if ! command -v node >/dev/null 2>&1; then
-        log_warn "node not available; defaulting to ${default_model}" >&2
+    local python_cmd=""
+    if command -v python3 >/dev/null 2>&1; then
+        python_cmd="python3"
+    elif command -v python >/dev/null 2>&1 && python -c 'import sys; exit(0 if sys.version_info >= (3, 0) else 1)' >/dev/null 2>&1; then
+        python_cmd="python"
+    else
+        log_warn "Python 3 interpreter not available; defaulting to ${default_model}" >&2
         printf '%s\n' "$default_model"
         return
     fi
@@ -306,66 +501,96 @@ select_model() {
     local response=""
 
     log_info "Fetching available models from ${MODELS_API_BASE_URL} (unauthenticated)..." >&2
-    if ! response=$(curl -fsS "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
+    if [ "$fetch_tool" = "curl" ]; then
+        if ! response=$(curl -fsS "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
+            log_warn "Unable to retrieve models; defaulting to ${default_model}" >&2
+            printf '%s\n' "$default_model"
+            return
+        fi
+    else
+        if ! response=$(wget -q -O - "${MODELS_API_BASE_URL}/v1/models" 2>/dev/null); then
+            log_warn "Unable to retrieve models; defaulting to ${default_model}" >&2
+            printf '%s\n' "$default_model"
+            return
+        fi
+    fi
+
+    if [ -z "$response" ]; then
         log_warn "Unable to retrieve models; defaulting to ${default_model}" >&2
         printf '%s\n' "$default_model"
         return
     fi
 
-    if [ -z "$response" ]; then
-        log_warn "Models response empty; defaulting to ${default_model}" >&2
-        printf '%s\n' "$default_model"
-        return
-    fi
+    local python_script
+    python_script=$(cat <<'PY'
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+models = payload.get("data")
+if not isinstance(models, list):
+    sys.exit(1)
+
+entries = []
+for model in models:
+    model_id = model.get("id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        continue
+
+    price_section = model.get("price") or {}
+    pricing_section = model.get("pricing") or {}
+
+    def num(value):
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    input_price = price_section.get("input", {}).get("usd")
+    output_price = price_section.get("output", {}).get("usd")
+
+    if input_price is None and pricing_section:
+        input_price = pricing_section.get("prompt")
+    if output_price is None and pricing_section:
+        output_price = pricing_section.get("completion")
+
+    input_price = num(input_price)
+    output_price = num(output_price)
+
+    if input_price > 0 or output_price > 0:
+        price_tag = f"${input_price:.2f}/${output_price:.2f}"
+    else:
+        price_tag = "n/a"
+
+    features = model.get("supported_features")
+    if not isinstance(features, list):
+        features = model.get("capabilities")
+
+    think_tag = "    "
+    if isinstance(features, list):
+        for feature in features:
+            if isinstance(feature, str) and feature.lower() == "thinking":
+                think_tag = "[TH]"
+                break
+
+    entries.append({"id": model_id.strip(), "price": price_tag, "think": think_tag})
+
+if not entries:
+    sys.exit(1)
+
+entries.sort(key=lambda item: item["id"].lower())
+
+for idx, entry in enumerate(entries, 1):
+    print(f"{idx}|{entry['id']}|{entry['price']}|{entry['think']}")
+PY
+    )
 
     local models_output=""
-    if ! models_output=$(printf '%s' "$response" | node --eval '
-        const fs = require("fs");
-        try {
-            const payload = JSON.parse(fs.readFileSync(0, "utf-8"));
-            const models = Array.isArray(payload?.data) ? payload.data : [];
-            const entries = models
-                .map((model) => {
-                    const id = model?.id;
-                    if (typeof id !== "string" || !id.trim()) {
-                        return null;
-                    }
-
-                    const inputPrice = model?.price?.input?.usd ?? model?.pricing?.prompt ?? 0;
-                    const outputPrice = model?.price?.output?.usd ?? model?.pricing?.completion ?? 0;
-                    const features = Array.isArray(model?.supported_features)
-                        ? model.supported_features
-                        : Array.isArray(model?.capabilities)
-                            ? model.capabilities
-                            : [];
-
-                    const thinkTag = features.some((feature) =>
-                        typeof feature === "string" && feature.toLowerCase() === "thinking"
-                    ) ? "[TH]" : "    ";
-
-                    let priceTag = "n/a";
-                    if (Number(inputPrice) > 0 || Number(outputPrice) > 0) {
-                        const inPrice = Number(inputPrice || 0).toFixed(2);
-                        const outPrice = Number(outputPrice || 0).toFixed(2);
-                        priceTag = `$${inPrice}/$${outPrice}`;
-                    }
-
-                    return { id, priceTag, thinkTag };
-                })
-                .filter(Boolean)
-                .sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: "base" }));
-
-            if (!entries.length) {
-                process.exit(1);
-            }
-
-            entries.forEach((entry, idx) => {
-                console.log(`${idx + 1}|${entry.id}|${entry.priceTag}|${entry.thinkTag}`);
-            });
-        } catch (_err) {
-            process.exit(1);
-        }
-    ' 2>/dev/null); then
+    if ! models_output=$(printf '%s' "$response" | "$python_cmd" -c "$python_script" 2>/dev/null); then
         models_output=""
     fi
 
