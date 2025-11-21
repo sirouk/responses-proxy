@@ -92,6 +92,26 @@ determine_platform_defaults() {
 
 determine_platform_defaults
 
+detect_windows_env_fallback() {
+    if [ "$PLATFORM_OS" = "windows" ]; then
+        return
+    fi
+
+    local os_env="${OS:-}"
+    local msystem_env="${MSYSTEM:-}"
+    local ostype_env="${OSTYPE:-}"
+
+    if [ "$os_env" = "Windows_NT" ] \
+        || [[ "$msystem_env" =~ ^(MINGW|MSYS|CYGWIN) ]] \
+        || [[ "$ostype_env" == *"msys"* ]] \
+        || [[ "$ostype_env" == *"cygwin"* ]]; then
+        PLATFORM_OS="windows"
+        CODEX_BINARY_DEST_DEFAULT="${HOME}/.codex/bin/codex.exe"
+    fi
+}
+
+detect_windows_env_fallback
+
 normalize_windows_path() {
     local raw_path="$1"
     if [ -z "$raw_path" ]; then
