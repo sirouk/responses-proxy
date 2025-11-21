@@ -29,15 +29,15 @@ DETECTED_ASSET_NAME=""
 KEY_STORED_ON_DISK=0
 
 log_info() {
-    echo "[INFO] $*"
+    echo "[INFO] $*" >&2
 }
 
 log_success() {
-    echo "[OK] $*"
+    echo "[OK] $*" >&2
 }
 
 log_warn() {
-    echo "[WARN] $*"
+    echo "[WARN] $*" >&2
 }
 
 log_error() {
@@ -170,7 +170,6 @@ fi
 
 github_api_request() {
     local path="$1"
-    log_info "Querying: ${GITHUB_API}${path}"
     local args=(--max-time 30 --silent --show-error --location --fail)
     if [ -n "${GITHUB_TOKEN:-}" ]; then
         args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -182,8 +181,10 @@ github_api_request() {
         log_error "GitHub API request failed (path: ${path}). Check connectivity or set http_proxy/https_proxy if needed."
     fi
 
-    local trimmed="${response//[[:space:]]/}"
-    if [ -z "$trimmed" ]; then
+    # Check if response contains any non-whitespace content
+    # Note: using grep is much faster than bash parameter expansion ${response//[[:space:]]/}
+    # which can hang for several seconds on large (17KB+) JSON responses
+    if ! grep -q '[^[:space:]]' <<<"$response"; then
         log_error "GitHub API returned an empty response for ${path}. The '${CODEX_RELEASE_TAG}' release may not exist yet."
     fi
 
@@ -840,4 +841,3 @@ main() {
 }
 
 main "$@"
-
